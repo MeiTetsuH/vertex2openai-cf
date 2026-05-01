@@ -1,0 +1,16 @@
+{
+  "name": "vertex2openai-cf",
+  "version": "1.0.0",
+  "description": "OpenAI-compatible API adapter for Google Vertex AI Gemini models, deployed on Cloudflare Workers",
+  "main": "src/index.ts",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "node scripts/deploy.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250424.0",
+    "typescript": "^5.8.3",
+    "wrangler": "^4.14.0"
+  }
+}

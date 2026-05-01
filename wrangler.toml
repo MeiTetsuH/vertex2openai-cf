@@ -1,0 +1,29 @@
+#:schema node_modules/wrangler/config-schema.json
+name = "vertex2openai"
+main = "src/index.ts"
+compatibility_date = "2025-04-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+GCP_LOCATION = "global"
+
+# Secrets (set via `wrangler secret put`):
+# API_KEY                  - Required. API key to protect this adapter.
+# VERTEX_EXPRESS_API_KEY   - Vertex AI Express API key(s), comma-separated for multiple.
+# VERTEX_API_KEY           - Alias for VERTEX_EXPRESS_API_KEY.
+# GOOGLE_CREDENTIALS_JSON  - Optional. Service Account JSON key(s), comma-separated.
+
+[observability]
+enabled = true
+head_sampling_rate = 1
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+persist = true
+invocation_logs = true
+
+[observability.traces]
+enabled = false
+persist = true
+head_sampling_rate = 1
