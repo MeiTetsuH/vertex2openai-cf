@@ -11,9 +11,9 @@ An OpenAI-compatible API adapter for Google Vertex AI Gemini models, deployed on
 - **Multiple Auth Methods**: Vertex AI Express API Key and/or Service Account JSON
 - **Official Vertex Routes**: Express keys use `publishers/google/models/...:generateContent`; service accounts use Vertex AI's OpenAI-compatible endpoint
 - **Multi-Key Rotation**: Round-robin rotation when multiple API keys are configured
-- **Thinking/Reasoning**: Extracts and surfaces `reasoning_content` from Gemini 2.5+ models
+- **Thinking/Reasoning**: Extracts and surfaces `reasoning_content` from Gemini 2.5+ / 3.x models
 - **Tool/Function Calling**: Full support for OpenAI-style function calling
-- **Image Generation**: Support for `-2k` and `-4k` image generation model variants
+- **Image Generation**: Support for `-2k` and `-4k` image generation model variants (see [Known Limitations](#known-limitations))
 - **Grounded Search**: Use `-search` suffix for Google Search grounding
 - **Zero Dependencies**: Uses only Web APIs (`fetch`, `TransformStream`, `Web Crypto`)
 - **Edge Deployment**: Runs on Cloudflare's global edge network for low latency
@@ -60,19 +60,19 @@ In Cloudflare Dashboard → Workers & Pages → your worker → Settings → Dom
 
 ### Secrets (encrypted, set via `wrangler secret put`)
 
-| Name | Required | Description |
-|------|----------|-------------|
-| `API_KEY` | ✅ | API key to protect this adapter |
+| Name                                        | Required        | Description                                   |
+| ------------------------------------------- | --------------- | --------------------------------------------- |
+| `API_KEY`                                   | ✅              | API key to protect this adapter               |
 | `VERTEX_EXPRESS_API_KEY` / `VERTEX_API_KEY` | ⚠️ One of these | Vertex AI Express API Key(s), comma-separated |
-| `GOOGLE_CREDENTIALS_JSON` | ⚠️ is required | Service Account JSON content(s) |
+| `GOOGLE_CREDENTIALS_JSON`                   | ⚠️ is required  | Service Account JSON content(s)               |
 
 ### Variables (set in `wrangler.toml` or dashboard)
 
-| Name | Default | Description |
-|------|---------|-------------|
-| `GCP_LOCATION` | `global` | GCP region/location |
+| Name             | Default     | Description             |
+| ---------------- | ----------- | ----------------------- |
+| `GCP_LOCATION`   | `global`    | GCP region/location     |
 | `GCP_PROJECT_ID` | auto-detect | Explicit GCP project ID |
-| `MODELS_CONFIG` | built-in | Custom model list JSON |
+| `MODELS_CONFIG`  | built-in    | Custom model list JSON  |
 
 ## API Usage
 
@@ -86,11 +86,11 @@ Authorization: Bearer YOUR_API_KEY
 
 ### Endpoints
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/` | Health check |
-| `GET` | `/v1/models` | List available models |
-| `POST` | `/v1/chat/completions` | Chat completions |
+| Method | Path                   | Description           |
+| ------ | ---------------------- | --------------------- |
+| `GET`  | `/`                    | Health check          |
+| `GET`  | `/v1/models`           | List available models |
+| `POST` | `/v1/chat/completions` | Chat completions      |
 
 ### Example: Non-Streaming
 
@@ -99,7 +99,7 @@ curl -X POST https://your-worker.workers.dev/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -d '{
-    "model": "gemini-2.5-flash",
+    "model": "gemini-3.1-pro-preview",
     "messages": [
       {"role": "user", "content": "Hello, what is 2+2?"}
     ]
@@ -113,7 +113,7 @@ curl -X POST https://your-worker.workers.dev/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -d '{
-    "model": "gemini-2.5-flash",
+    "model": "gemini-3.1-pro-preview",
     "messages": [
       {"role": "user", "content": "Write a short poem about coding."}
     ],
@@ -123,18 +123,35 @@ curl -X POST https://your-worker.workers.dev/v1/chat/completions \
 
 ## Model Variants
 
-| Suffix | Description |
-|--------|-------------|
-| *(none)* | Standard model call |
-| `-openai` | Explicit OpenAI-compatible endpoint (Service Account / `[PAY]` models only) |
+| Suffix          | Description                                                                        |
+| --------------- | ---------------------------------------------------------------------------------- |
+| _(none)_        | Standard model call                                                                |
+| `-openai`       | Explicit OpenAI-compatible endpoint (Service Account / `[PAY]` models only)        |
 | `-openaisearch` | OpenAI-compatible endpoint with web search (Service Account / `[PAY]` models only) |
-| `-search` | Google Search grounding |
-| `-nothinking` | Lower thinking budget/level where supported |
-| `-max` | Highest thinking budget/level where supported |
-| `-2k` | Image generation at 2K resolution |
-| `-4k` | Image generation at 4K resolution |
+| `-search`       | Google Search grounding                                                            |
+| `-nothinking`   | Lower thinking budget/level where supported                                        |
+| `-max`          | Highest thinking budget/level where supported                                      |
+| `-2k`           | Image generation at 2K resolution (⚠️ see [Known Limitations](#known-limitations)) |
+| `-4k`           | Image generation at 4K resolution (⚠️ see [Known Limitations](#known-limitations)) |
 
 Models are prefixed with `[EXPRESS]` or `[PAY]` based on auth method. If you call an unprefixed model and both auth methods are configured, the Worker prefers Express mode. Use `[PAY]` to force the Service Account path.
+
+## Known Limitations
+
+### ⚠️ Image Generation on Cloudflare Workers Free Plan
+
+Image generation models (e.g., `gemini-3.1-flash-image-preview`, `-2k`, `-4k` variants) are **very likely to fail** on the Cloudflare Workers **Free plan** due to the 10ms CPU time limit.
+
+Image model responses contain large base64-encoded image data. Processing (JSON parse + format conversion) of such payloads typically consumes **50–130ms of CPU time**, far exceeding the free tier's 10ms cap. When the limit is hit, Cloudflare terminates the Worker, resulting in a `RangeError` or `exceededCpu` error.
+
+**Solutions:**
+
+| Option                           | Details                                                                                                                                                                                                            |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Upgrade to Workers Paid Plan** | $5/month with the **Unbound** usage model gives up to 30s CPU time per invocation. This fully resolves the issue.                                                                                                  |
+| **Self-host / Local deployment** | Run the adapter locally or on a VM (Docker, Node.js) where there are no CPU time constraints. See the original [vertex2openai](https://github.com/gzzhongqi/vertex2openai) project for a Docker-based alternative. |
+
+> **Note:** Standard text-only models (e.g., `gemini-3.1-flash`, `gemini-3.1-pro-preview`) work fine on the free plan — their responses are small enough to stay within the CPU limit.
 
 ## Architecture
 
@@ -185,7 +202,7 @@ curl -H "Authorization: Bearer test123" http://localhost:8787/v1/models
 curl -X POST http://localhost:8787/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer test123" \
-  -d '{"model":"gemini-2.5-flash","messages":[{"role":"user","content":"Hi!"}]}'
+  -d '{"model":"gemini-3.1-pro-preview","messages":[{"role":"user","content":"Hi!"}]}'
 ```
 
 ## Acknowledgments
