@@ -18,6 +18,7 @@ An OpenAI-compatible API adapter for Google Vertex AI Gemini models, deployed on
 - **Zero Dependencies**: Uses only Web APIs (`fetch`, `TransformStream`, `Web Crypto`)
 - **Edge Deployment**: Runs on Cloudflare's global edge network for low latency
 - **One-Click Deploy**: Deploy button for instant setup
+- - **test**: Deploy cloudflare
 
 ## Quick Start
 
