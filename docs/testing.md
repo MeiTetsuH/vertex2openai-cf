@@ -2,7 +2,76 @@
 
 This record preserves measurements from v1.x through v2.1.1. **Wall time, local CPU and Cloudflare CPU are different measurements.** Historical values are not a controlled cross-version benchmark. See the [README](../README.md#workers-free-plan-read-before-deploying) for current deployment guidance.
 
-## v2.1.1 validation — 2026-09-27
+## Production follow-up — 2026-09-27
+
+v2.1.1 was subsequently deployed to Cloudflare from the released source. The deployment fork was fast-forwarded to the same commit; production variables and secrets were preserved. This installation has **service-account credentials only**, so production results cover that configured route. Express coverage remains the earlier Linux evidence below.
+
+| Production check | Result | Elapsed wall time |
+| --- | --- | ---: |
+| Predeployment `npm run verify` | Typecheck and 284/284 unit tests passed | 0.83 s |
+| Routing, authentication and input validation | 7/7 passed | 0.25 s |
+| Chat Completions | 12/12 passed | 110.62 s |
+| Image generation: Chat non-streaming, Chat streaming, Responses streaming | Passed all three modes | 64.38 s |
+| Responses | 6/6 passed | 19.67 s |
+| **Complete production E2E runner** | **26/26 passed; 0 failed, 0 cancelled, 0 skipped** | **194.98 s (3m 14.98s)** |
+| Runner including the outer process wrapper | Exit code 0 | 195.01 s |
+
+The run made **50 HTTP requests**, all matched to production log entries with `outcome: ok` and no runtime exceptions. Four upstream 429 responses recovered through the test client's existing backoff: one during image-input chat, three during Responses image generation. Expected 400/401/404/405 checks are included in the request count. A green scenario suite therefore does not mean every HTTP attempt was 200 or that Vertex capacity is guaranteed.
+
+The earlier Linux SA image failure remains in the historical record; this later production run **successfully verifies SA image generation end to end**. It does not change the earlier run's 25/26 result. No new production credentials were created. The log collector stopped after the run and retained only request IDs, endpoint paths, model/stream labels, status and timing metadata, without authorization headers or bodies.
+
+### Production CPU and request time
+
+CPU and wall time below come directly from `wrangler tail`, joined to each test request. Only successful model requests are included. Text uses `gemini-3.8-flash`; images use `gemini-3.1-flash-lite-image` with a simple red-circle prompt.
+
+| Successful request | Samples | CPU range | Median CPU | Worker wall-time range |
+| --- | ---: | ---: | ---: | ---: |
+| Chat text, non-streaming | 17 | 1–7 ms | 1 ms | 1.24–20.15 s |
+| Chat text, streaming | 3 | 3–10 ms | 5 ms | 1.61–2.63 s |
+| Responses text, non-streaming | 5 | 1–4 ms | 2 ms | 0.98–4.86 s |
+| Responses text, streaming | 3 | 5–17 ms | 5 ms | 1.80–3.32 s |
+| Image, Chat non-streaming | 1 | 4 ms | 4 ms | 2.57 s |
+| Image, Chat streaming | 1 | 11 ms | 11 ms | 2.69 s |
+| Image, Responses streaming | 1 | 14 ms | 14 ms | 2.99 s |
+
+Image response byte sizes were not captured. Each image row is one successful Flash-Lite sample, **not the historical 2.9 MB fixture**, and cannot establish a cross-version speedup. CPU includes the work done for that request; cold-token/connection effects were not isolated. Streaming samples still exceed Free's 10 ms budget even though this run completed without runtime errors.
+
+Deployment build: **82.18 KiB**, **19.26 KiB gzipped**, with **1 ms startup time** reported by Wrangler.
+
+### Individual production scenario timings
+
+Durations include all calls and retry waits within each scenario.
+
+| Scenario | Wall time |
+| --- | ---: |
+| Invalid JSON shapes | 0.103 s |
+| Health without authentication | 0.011 s |
+| Missing/wrong adapter key | 0.021 s |
+| Unknown routes and wrong methods, with CORS | 0.022 s |
+| OpenAI SDK CORS preflight | 0.011 s |
+| Model-list validation | 0.00038 s |
+| Gemini 2 rejection | 0.012 s |
+| Chat plain text | 2.96 s |
+| Chat streaming | 2.64 s |
+| Chat truncation, streaming and non-streaming | 7.53 s |
+| `-max` / `-nothinking` | 6.55 s |
+| Developer instructions and multi-turn chat | 1.29 s |
+| Tool/signature round trip | 4.63 s |
+| Streamed tool calls | 1.98 s |
+| `tool_choice`: none and named function | 2.81 s |
+| Structured JSON output | 3.01 s |
+| Strict tool schema | 3.15 s |
+| Inline and URL image input, including one recovered 429 | 66.77 s |
+| Search grounding | 7.31 s |
+| Image output in all three modes, including three recovered 429s | 64.38 s |
+| Responses plain text | 1.02 s |
+| Responses streaming | 3.33 s |
+| Responses truncation | 7.00 s |
+| Responses tool round trip | 6.72 s |
+| Responses `text.format` schema | 1.58 s |
+| Responses `previous_response_id` rejection | 0.020 s |
+
+## v2.1.1 predeployment validation — 2026-09-27
 
 Local checks used Node.js 24.21.0. Live tests used Node.js 24.18.0 on a Linux development machine, the repository's locked workerd runtime and compatibility date `2026-09-03`. Text: `gemini-3.8-flash`; images: `gemini-3.1-flash-lite-image`. Both Express and service-account credentials were required.
 
@@ -19,7 +88,7 @@ The full E2E run tested the streaming, validation and performance changes. A fin
 
 Coverage: **99.84% lines, 93.21% branches, 100% functions**. Enforced gates: 99%, 90%, 100% respectively. `npm run bench` and `git diff --check` also passed.
 
-The image failure is an upstream capacity/quota response, reproducible without the adapter. Express image generation passed in non-streaming, Chat streaming and Responses streaming modes, with some 429 retries. **SA image generation still needs a successful end-to-end run when upstream capacity permits**; 25/26 is not a fully green live suite. Google's [429 troubleshooting documentation](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/deploy/error-code-429) describes capacity/quota causes and retry guidance.
+The image failure is an upstream capacity/quota response, reproducible without the adapter. Express image generation passed in non-streaming, Chat streaming and Responses streaming modes, with some 429 retries. **At that point, SA image generation still needed a successful end-to-end run**; 25/26 was not a fully green live suite. The subsequent production run above passed, while this earlier result is retained unchanged. Google's [429 troubleshooting documentation](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/deploy/error-code-429) describes capacity/quota causes and retry guidance.
 
 The isolated reruns used IPv4 outbound connectivity for the test process only. An earlier run with default networking encountered long waits and timeouts; the IPv4 run completed without test timeouts, but this alone does not establish the cause. Temporary SA/API keys, isolated test files and processes were removed after testing; existing credentials were preserved.
 
@@ -116,7 +185,7 @@ The following numbers are retained from earlier committed READMEs and Releases. 
 
 ### Cloudflare production CPU — 2026-09-24
 
-These corrected v2.1.0 measurements came from `wrangler tail` request `cpuTime`, as recorded in [commit a5a1972][correction], which is **after the v2.1.0 tag**. They remain the latest production measurements in this report.
+These corrected v2.1.0 measurements came from `wrangler tail` request `cpuTime`, as recorded in [commit a5a1972][correction], which is **after the v2.1.0 tag**. They are retained as the historical baseline; the v2.1.1 production follow-up above uses different live samples.
 
 | Request | Cloudflare CPU |
 | --- | ---: |
@@ -126,7 +195,7 @@ These corrected v2.1.0 measurements came from `wrangler tail` request `cpuTime`,
 | Default image, 2.9 MB base64, non-streaming | ~36 ms |
 | Same image, streaming | ~100 ms |
 
-CPU time does not include network waiting. See [Cloudflare's limits](https://developers.cloudflare.com/workers/platform/limits/) for CPU, memory and request budgets. No v2.1.1 production CPU result is claimed here.
+CPU time does not include network waiting. See [Cloudflare's limits](https://developers.cloudflare.com/workers/platform/limits/) for CPU, memory and request budgets. For the later v2.1.1 samples, see the production follow-up above; the fixtures differ.
 
 [v1]: https://github.com/workHMZ/vertex2openai-cf/blob/v1.0.0/README.md
 [legacy]: https://github.com/workHMZ/vertex2openai-cf/blob/ea482a2/README.md

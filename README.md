@@ -65,17 +65,21 @@ To upgrade an existing installation: `git pull --ff-only`, `npm ci`, `npm run ve
 
 Limits checked against [Cloudflare's official documentation](https://developers.cloudflare.com/workers/platform/limits/) on 2026-09-27. Workers Paid defaults to **30 seconds of CPU** per request (configurable up to 5 minutes); this is separate from Vertex billing and quotas.
 
-**Actual Cloudflare CPU**, measured with `wrangler tail` on **v2.1.0, 2026-09-24**:
+**Actual Cloudflare CPU**, measured with `wrangler tail` on **v2.1.1, 2026-09-27**, using the production service-account route:
 
-| Request | CPU time | Compared with Free's 10 ms |
-| --- | ---: | --- |
-| Text, non-streaming | 2–6 ms | Within the measured budget |
-| Chat or Responses text, streaming | 3–12 ms | Can exceed it |
-| First service-account request on a fresh isolate | ~16 ms | Exceeds it; OAuth token is then cached until refresh |
-| Default image, 2.9 MB base64, non-streaming | ~36 ms | Exceeds it |
-| Same image, streaming | ~100 ms | Exceeds it |
+| Successful request | Samples | CPU range | Median |
+| --- | ---: | ---: | ---: |
+| Chat text, non-streaming | 17 | 1–7 ms | 1 ms |
+| Chat text, streaming | 3 | 3–10 ms | 5 ms |
+| Responses text, non-streaming | 5 | 1–4 ms | 2 ms |
+| Responses text, streaming | 3 | 5–17 ms | 5 ms |
+| Flash-Lite image, Chat non-streaming | 1 | 4 ms | 4 ms |
+| Flash-Lite image, Chat streaming | 1 | 11 ms | 11 ms |
+| Flash-Lite image, Responses streaming | 1 | 14 ms | 14 ms |
 
-Use **Workers Paid and non-streaming requests for image generation**. A previous 4K sample produced a ~54 MB HTTP response; Paid does not raise the isolate's 128 MB memory limit or fix Vertex 429 errors. Occasional successful over-budget Free requests are not a reliability guarantee. v2.1.1's local optimization has **not** been remeasured on production Cloudflare; [historical measurements and methodology](docs/testing.md#historical-measurements) are retained separately.
+All 26 production E2E scenarios passed, including images after retrying upstream 429s. Image response sizes were not recorded; these single Flash-Lite samples cannot be compared directly with the older 2.9 MB image measurements (~36/100 ms non-streaming/streaming). The local 18% optimization is not a measured production speedup.
+
+Use **Workers Paid and non-streaming requests for image generation**. A previous 4K sample produced a ~54 MB HTTP response; Paid does not raise the isolate's 128 MB memory limit or fix Vertex 429 errors. Successful requests above Free's CPU budget are not a reliability guarantee. [Historical measurements and methodology](docs/testing.md#historical-measurements) are preserved.
 
 ## Configuration and API
 
@@ -125,11 +129,12 @@ Thinking accepts `none`, `minimal`, `low`, `medium`, `high`, `xhigh` and `max`; 
 | Validation, 2026-09-27 | Result | Elapsed time |
 | --- | --- | ---: |
 | `npm run verify` | Typecheck + **284/284** unit tests; coverage 99.84% lines / 93.21% branches / 100% functions | **0.69 s** |
-| Linux workerd + real Vertex, full E2E | **25/26** passed, no timeouts/skips; SA image request returned upstream 429 | **331.84 s (5m 31.84s)** |
-| Final affected E2E rerun | Responses **6/6** passed; SA image still 429 | **183.55 s (3m 3.55s)** |
-| Direct Vertex check, bypassing Worker | Same SA image request returned `429 RESOURCE_EXHAUSTED` | **0.19 s** |
+| Production Cloudflare, complete configured SA route | **26/26** passed, no failures/cancellations/skips; four 429 responses recovered through retries | **194.98 s (3m 14.98s)** |
+| Linux workerd + real Vertex, earlier full E2E | **25/26** passed, no timeouts/skips; SA image request returned upstream 429 | **331.84 s (5m 31.84s)** |
+| Earlier final affected E2E rerun | Responses **6/6** passed; SA image still 429 | **183.55 s (3m 3.55s)** |
+| Earlier direct Vertex check, bypassing Worker | Same SA image request returned `429 RESOURCE_EXHAUSTED` | **0.19 s** |
 
-E2E counts are **scenarios**, often containing several requests across both credential types. SA image generation remains unverified end to end; Express image generation passed in non-streaming, Chat streaming and Responses streaming modes. [Detailed timings, local CPU results and historical test data](docs/testing.md) include the scope of each measurement.
+E2E counts are **scenarios**, often containing several requests across both credential types. The earlier Linux run exercised both credential types; production has only SA credentials and now passes all three image modes. Express image generation passed in the earlier isolated tests. [Detailed timings, local CPU results and historical test data](docs/testing.md) include the scope of each measurement.
 
 ```bash
 npm run dev       # local Worker; secrets in .dev.vars, restart after editing them
