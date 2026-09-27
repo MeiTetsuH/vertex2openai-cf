@@ -194,7 +194,8 @@ function thinkingLevelFor(
 export function signToolCallsForOpenAIEndpoint(
   messages: OpenAIMessage[]
 ): OpenAIMessage[] {
-  return messages.map((msg) => {
+  return messages.map((message) => {
+    const msg = message.role === "developer" ? { ...message, role: "system" as const } : message;
     if (msg.role !== "assistant" || !msg.tool_calls?.length) return msg;
 
     let signed = false;
@@ -466,7 +467,7 @@ function extractSystemInstruction(messages: OpenAIMessage[]): { parts: VertexPar
   const parts: VertexPart[] = [];
 
   for (const msg of messages) {
-    if (msg.role !== "system") continue;
+    if (msg.role !== "system" && msg.role !== "developer") continue;
     if (typeof msg.content === "string" && msg.content.length > 0) {
       parts.push({ text: msg.content });
     } else if (Array.isArray(msg.content)) {
@@ -489,7 +490,7 @@ export function buildVertexGenerateContentBody(
   request: OpenAIRequest,
   modelInfo: ParsedModelInfo
 ): VertexRequest {
-  const nonSystemMessages = request.messages.filter((msg) => msg.role !== "system");
+  const nonSystemMessages = request.messages.filter((msg) => msg.role !== "system" && msg.role !== "developer");
   const body: VertexRequest = {
     contents: convertMessagesToVertex(nonSystemMessages, {
       // Gemini 3 validates thought signatures on every functionCall part.

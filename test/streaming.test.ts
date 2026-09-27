@@ -38,6 +38,15 @@ const parseChunks = (payloads: string[]) =>
   payloads.filter((p) => p !== "[DONE]").map((p) => JSON.parse(p));
 
 describe("createVertexStreamTransformer", () => {
+  test("preserves a separate usage frame after the final candidate", async () => {
+    const chunks = parseChunks(await pump(createVertexStreamTransformer("m"), [
+      'data: {"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}]}\n\n',
+      'data: {"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":4,"totalTokenCount":7}}\n\n',
+    ]));
+    assert.deepEqual(chunks.at(-1).choices, []);
+    assert.equal(chunks.at(-1).usage.total_tokens, 7);
+    assert.ok(!chunks.some(chunk => chunk.error));
+  });
   test("numbers tool calls upward across chunks", async () => {
     const payloads = await pump(createVertexStreamTransformer("m"), [
       'data: {"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"a","args":{}}}]}}]}\n\n',
@@ -65,7 +74,7 @@ describe("createVertexStreamTransformer", () => {
     const payloads = await pump(createVertexStreamTransformer("m"), [
       'data: {"candidates":[{"content":{"role":"model","parts":[{"text":"hmm","thought":true},{"text":"hi"}]},"finishReason":"STOP"}]}\n\n',
     ]);
-    const deltas = parseChunks(payloads).map((c) => c.choices[0].delta);
+    const deltas = parseChunks(payloads).flatMap((c) => c.choices ?? []).map((c) => c.delta);
     assert.deepEqual(deltas[0], { role: "assistant" });
     assert.deepEqual(deltas[1], { reasoning_content: "hmm" });
     assert.deepEqual(deltas[2], { content: "hi" });
@@ -104,16 +113,15 @@ describe("createVertexStreamTransformer", () => {
     });
   });
 
-  test("ignores malformed frames instead of aborting the stream", async () => {
+  test("reports malformed frames and ignores later content", async () => {
     const payloads = await pump(createVertexStreamTransformer("m"), [
       "data: {not json}\n\n",
       'data: {"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}]}\n\n',
     ]);
-    const text = parseChunks(payloads)
-      .map((c) => c.choices[0].delta.content)
-      .filter(Boolean)
-      .join("");
-    assert.equal(text, "ok");
+    const chunks = parseChunks(payloads);
+    assert.match(chunks[0].error.message, /Malformed JSON/);
+    assert.equal(chunks.length, 1);
+    assert.equal(payloads.at(-1), "[DONE]");
   });
 });
 
@@ -146,11 +154,12 @@ describe("createVertexStreamTransformer edge cases", () => {
     assert.deepEqual(finishes(payloads), []);
   });
 
-  test("still finishes when the stream ends before finishReason", async () => {
+  test("fails when the stream ends before finishReason", async () => {
     const payloads = await pump(createVertexStreamTransformer("m"), [
       'data: {"candidates":[{"content":{"role":"model","parts":[{"text":"cut"}]}}]}\n\n',
     ]);
-    assert.deepEqual(finishes(payloads), ["stop"]);
+    assert.deepEqual(finishes(payloads), []);
+    assert.match(parseChunks(payloads).at(-1).error.message, /before a finishReason/);
     assert.equal(payloads.at(-1), "[DONE]");
   });
 });
@@ -176,7 +185,7 @@ describe("createStreamTransformer", () => {
       'data: {"id":"x","created":1,"choices":[{"index":0,"delta":{"content":"<vertex_think_tag>why</vertex_think_tag>answer"}}]}\n\n',
       "data: [DONE]\n\n",
     ]);
-    const deltas = parseChunks(payloads).map((c) => c.choices[0].delta);
+    const deltas = parseChunks(payloads).flatMap((c) => c.choices ?? []).map((c) => c.delta);
     assert.deepEqual(deltas[0], { reasoning_content: "why" });
     assert.deepEqual(deltas[1], { content: "answer" });
   });
@@ -294,7 +303,7 @@ describe("finish_reason handling in the OpenAI-compatible stream", () => {
     assert.equal(delta.tool_calls[0].id, "c1");
   });
 
-  test("still synthesises a finish chunk when upstream sends none", async () => {
+  test("reports an error when upstream sends no finish chunk", async () => {
     const payloads = await pump(createStreamTransformer("m"), [
       'data: {"id":"x","created":1,"choices":[{"index":0,"delta":{"content":"hi"}}]}\n\n',
       "data: [DONE]\n\n",
@@ -303,7 +312,8 @@ describe("finish_reason handling in the OpenAI-compatible stream", () => {
       .flatMap((c) => c.choices ?? [])
       .map((c: { finish_reason: string | null }) => c.finish_reason)
       .filter(Boolean);
-    assert.deepEqual(finishes, ["stop"]);
+    assert.deepEqual(finishes, []);
+    assert.match(parseChunks(payloads).at(-1).error.message, /before a finish_reason/);
   });
 
   test("every streamed choice carries the required finish_reason key", async () => {
@@ -357,12 +367,13 @@ describe("OpenAI-compatible stream flushing", () => {
     }
   });
 
-  test("skips a malformed frame without dropping the stream", async () => {
+  test("fails on a malformed frame without emitting later content", async () => {
     const payloads = await pump(createStreamTransformer("m"), [
       "data: {oops\n\n",
       'data: {"id":"x","created":1,"choices":[{"index":0,"delta":{"content":"fine"},"finish_reason":"stop"}]}\n\n',
     ]);
-    assert.equal(texts(payloads).map((d) => d.content ?? "").join(""), "fine");
+    assert.equal(texts(payloads).map((d) => d.content ?? "").join(""), "");
+    assert.match(parseChunks(payloads)[0].error.message, /Malformed JSON/);
   });
 
   test("the native transformer passes an explicit [DONE] through once", async () => {

@@ -4,6 +4,7 @@
 
 import type { Env, OpenAIRequest } from "../types";
 import { jsonError } from "../auth";
+import { validateRequestShape } from "../validation";
 import {
   dispatchToVertex,
   errorMessage,
@@ -30,6 +31,9 @@ export async function handleChatCompletions(
   } catch {
     return jsonError(400, "Invalid JSON in request body.", "invalid_request_error");
   }
+
+  const shapeError = validateRequestShape(body, false);
+  if (shapeError) return jsonError(400, shapeError.message, "invalid_request_error", shapeError.param);
 
   if (!body.model || typeof body.model !== "string") {
     return jsonError(400, "Missing required field: model.", "invalid_request_error");

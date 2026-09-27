@@ -23,6 +23,21 @@ const req = (over: Partial<OpenAIRequest> = {}): OpenAIRequest => ({
   ...over,
 });
 
+test("developer instructions remain system instructions on both Vertex routes", () => {
+  const request = req({ messages: [
+    { role: "system", content: "System rules" },
+    { role: "developer", content: [{ type: "text", text: "Application rules" }] },
+    { role: "user", content: "Hello" },
+  ] });
+  const info = parseModelName(request.model);
+  const native = buildVertexGenerateContentBody(request, info);
+  assert.deepEqual(native.systemInstruction, { parts: [{ text: "System rules" }, { text: "Application rules" }] });
+  assert.deepEqual(native.contents, [{ role: "user", parts: [{ text: "Hello" }] }]);
+  const openai = buildOpenAICompatibleBody(request, info);
+  assert.deepEqual((openai.messages as OpenAIMessage[]).map(m => m.role), ["system", "system", "user"]);
+  assert.equal(request.messages[1].role, "developer", "conversion must not mutate the input");
+});
+
 describe("parseModelName", () => {
   test("strips the [EXPRESS] prefix", () => {
     const m = parseModelName("[EXPRESS] gemini-3.1-pro-preview");

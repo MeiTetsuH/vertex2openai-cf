@@ -41,7 +41,7 @@ export interface OpenAIContentPartImage {
 export type OpenAIContentPart = OpenAIContentPartText | OpenAIContentPartImage;
 
 export interface OpenAIMessage {
-  role: "system" | "user" | "assistant" | "tool";
+  role: "system" | "developer" | "user" | "assistant" | "tool";
   content: string | OpenAIContentPart[] | null;
   name?: string;
   tool_calls?: OpenAIToolCall[];

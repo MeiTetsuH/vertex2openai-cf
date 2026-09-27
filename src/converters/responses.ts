@@ -222,8 +222,8 @@ export function incompleteReason(
   return finishReason ? INCOMPLETE_REASONS[finishReason] : undefined;
 }
 
-export function makeResponseId(seed: number = Date.now()): string {
-  return `resp_${seed.toString(36)}`;
+export function makeResponseId(): string {
+  return `resp_${crypto.randomUUID().replace(/-/g, "")}`;
 }
 
 function usageToResponses(usage: OpenAIResponse["usage"]): ResponseUsage {

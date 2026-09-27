@@ -175,6 +175,7 @@ const CASES = [
   ["40-turn tool history (request side)", () => reply(nativeJson), "/v1/chat/completions", chat({ messages: longHistory })],
   ["image 1K (~2.9 MB base64) [paid plan]", () => reply(imageJson(2.9e6)), "/v1/chat/completions", chat({ model: "gemini-3.1-flash-image" }), true],
   ["image 1K, streamed [paid plan]", () => reply(sse([imageJson(2.9e6)]), "text/event-stream"), "/v1/chat/completions", chat({ model: "gemini-3.1-flash-image", stream: true }), true],
+  ["image 1K, Responses [paid plan]", () => reply(sse([imageJson(2.9e6)]), "text/event-stream"), "/v1/responses", { model: "gemini-3.1-flash-image", input: "hi", stream: true }, true],
   ["image 2K (~11.6 MB) [paid plan]", () => reply(imageJson(11.6e6)), "/v1/chat/completions", chat({ model: "gemini-3.1-flash-image-2k" }), true],
 ];
 

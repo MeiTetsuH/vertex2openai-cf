@@ -7,6 +7,7 @@ import { convertFunctionCallsToOpenAI } from "./tools";
 import { mapFinishReason } from "./finish-reason";
 import { buildUsage, normalizeUsage } from "./response";
 import { SseLineBuffer } from "./sse-lines";
+import { createChatSseSink, streamError, type ChatStreamSink, type ChatStreamChunk } from "./stream-events";
 
 const THINKING_TAG = "vertex_think_tag";
 
@@ -119,336 +120,226 @@ export class StreamingReasoningProcessor {
   }
 }
 
-/**
- * Transform a Vertex AI SSE stream into an OpenAI-compatible SSE stream.
- * Reads from the upstream Response body line-by-line.
- */
+/** Decode and normalize the OpenAI-compatible upstream stream. */
 export function createStreamTransformer(
-  requestModel: string
+  requestModel: string,
+  emit: ChatStreamSink = createChatSseSink()
 ): TransformStream<Uint8Array, Uint8Array> {
-  const encoder = new TextEncoder();
   const input = new SseLineBuffer();
   const processor = new StreamingReasoningProcessor();
+  const responseId = `chatcmpl-${crypto.randomUUID()}`;
   let doneSent = false;
-  // Upstream already terminates most streams with a finish_reason; emitting
-  // our own on top of it would hand clients two finish chunks.
   let finishEmitted = false;
+  type Controller = TransformStreamDefaultController<Uint8Array>;
 
+  function flushText(controller: Controller) {
+    const [content, reasoning] = processor.flushRemaining();
+    if (reasoning) emit(makeChunkFromBase(responseBase, requestModel, { reasoning_content: reasoning }, null), controller);
+    if (content) emit(makeChunkFromBase(responseBase, requestModel, { content }, null), controller);
+  }
+
+  function finish(controller: Controller) {
+    if (doneSent) return;
+    flushText(controller);
+    if (!finishEmitted) {
+      emit(streamError("Vertex AI stream ended before a finish_reason was received."), controller);
+    }
+    emit("[DONE]", controller);
+    doneSent = true;
+  }
+
+  function fail(error: ChatStreamChunk, controller: Controller) {
+    flushText(controller);
+    emit(error, controller);
+    emit("[DONE]", controller);
+    doneSent = true;
+  }
+
+  function processLine(line: string, controller: Controller) {
+    if (doneSent || !line.startsWith("data:")) return;
+    const payload = line.slice(5).trim();
+    if (!payload) return;
+    if (payload === "[DONE]") {
+      finish(controller);
+      return;
+    }
+
+    let data: ChatStreamChunk;
+    try {
+      data = JSON.parse(payload);
+      if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error("Invalid frame");
+    } catch {
+      fail(streamError("Malformed JSON frame from Vertex AI."), controller);
+      return;
+    }
+    if (data.error) {
+      fail({ error: data.error }, controller);
+      return;
+    }
+    if (data.id) responseBase.id = data.id;
+    if (data.created) responseBase.created = data.created;
+    if (data.usage) data.usage = normalizeUsage({ ...data.usage });
+    data.model = requestModel;
+    const choice = data.choices?.[0];
+    if (!choice) {
+      emit(data, controller);
+      return;
+    }
+
+    const delta = choice.delta ?? {};
+    choice.delta = delta;
+    const content = typeof delta.content === "string" ? delta.content : "";
+    const finishReason = choice.finish_reason ?? null;
+    choice.finish_reason = finishReason;
+    delete delta.extra_content;
+
+    let text = "";
+    let reasoning = "";
+    if (content) [text, reasoning] = processor.processChunk(content);
+    if (finishReason) {
+      const [restText, restReasoning] = processor.flushRemaining();
+      text += restText;
+      reasoning += restReasoning;
+      finishEmitted = true;
+    }
+    if (reasoning) {
+      emit(makeChunkFromBase(data, requestModel, { reasoning_content: reasoning }, null), controller);
+    }
+    if (text) delta.content = text;
+    else delete delta.content;
+    const onlyReasoning = content && !text && !finishReason && !data.usage && Object.keys(delta).length === 0;
+    if (!onlyReasoning) emit(data, controller);
+  }
+
+  const responseBase: ChatStreamChunk = { id: responseId };
   return new TransformStream({
     transform(chunk, controller) {
-      if (doneSent) return;
-      for (const line of input.push(chunk)) {
-        if (!line.startsWith("data: ")) continue;
-        const jsonStr = line.slice(6).trim();
-
-        if (jsonStr === "[DONE]") {
-          // Flush remaining
-          const [remContent, remReasoning] = processor.flushRemaining();
-          if (remReasoning) {
-            const rp = makeChunk(requestModel, { reasoning_content: remReasoning }, null);
-            controller.enqueue(encoder.encode(`data: ${JSON.stringify(rp)}\n\n`));
-          }
-          if (remContent) {
-            const cp = makeChunk(requestModel, { content: remContent }, null);
-            controller.enqueue(encoder.encode(`data: ${JSON.stringify(cp)}\n\n`));
-          }
-          if (!finishEmitted) {
-            const fp = makeChunk(requestModel, {}, "stop");
-            controller.enqueue(encoder.encode(`data: ${JSON.stringify(fp)}\n\n`));
-          }
-          controller.enqueue(encoder.encode("data: [DONE]\n\n"));
-          doneSent = true;
-          return;
-        }
-
-        try {
-          const data = JSON.parse(jsonStr);
-          // Same fix as the non-streaming path: Vertex reports reasoning
-          // tokens outside completion_tokens, so the totals do not add up.
-          if (data.usage) data.usage = normalizeUsage(data.usage);
-          const choices = data.choices;
-          if (!choices || !Array.isArray(choices) || choices.length === 0) {
-            // Pass through non-choice chunks
-            data.model = requestModel;
-            controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
-            continue;
-          }
-
-          const choice = choices[0];
-          const delta = choice.delta || {};
-          choice.delta = delta;
-          const content = typeof delta.content === "string" ? delta.content : "";
-          // The OpenAI schema requires the key on every streamed choice.
-          const finishReason = choice.finish_reason ?? null;
-          choice.finish_reason = finishReason;
-
-          // Remove extra_content if present
-          delete delta.extra_content;
-
-          let text = "";
-          let reasoning = "";
-          if (content) [text, reasoning] = processor.processChunk(content);
-          // A finished candidate sends nothing more, so whatever the tag
-          // parser is holding back has to go out ahead of the finish chunk.
-          if (finishReason) {
-            const [restText, restReasoning] = processor.flushRemaining();
-            text += restText;
-            reasoning += restReasoning;
-            finishEmitted = true;
-          }
-
-          if (reasoning) {
-            const rChunk = makeChunkFromBase(data, requestModel, { reasoning_content: reasoning }, null);
-            controller.enqueue(encoder.encode(`data: ${JSON.stringify(rChunk)}\n\n`));
-          }
-
-          // Vertex puts finish_reason and usage on the chunk that carries the
-          // last piece of text, so the rest of the upstream chunk — role, tool
-          // calls, finish_reason, usage — travels with the visible text rather
-          // than being rebuilt from scratch and losing fields.
-          if (text) delta.content = text;
-          else delete delta.content;
-          const onlyReasoning =
-            content && !text && !finishReason && !data.usage &&
-            Object.keys(delta).length === 0;
-          if (!onlyReasoning) {
-            data.model = requestModel;
-            controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
-          }
-        } catch {
-          // Skip malformed JSON lines
-        }
-      }
+      for (const line of input.push(chunk)) processLine(line, controller);
     },
-
     flush(controller) {
-      if (doneSent) return;
-
-      const [remContent, remReasoning] = processor.flushRemaining();
-      if (remReasoning) {
-        const rp = makeChunk(requestModel, { reasoning_content: remReasoning }, null);
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify(rp)}\n\n`));
-      }
-      if (remContent) {
-        const cp = makeChunk(requestModel, { content: remContent }, null);
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify(cp)}\n\n`));
-      }
-
-      // The upstream connection can end without a [DONE] sentinel; OpenAI
-      // clients hang waiting for it, so always close the stream ourselves.
-      if (!finishEmitted) {
-        const fp = makeChunk(requestModel, {}, "stop");
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify(fp)}\n\n`));
-      }
-      controller.enqueue(encoder.encode("data: [DONE]\n\n"));
-      doneSent = true;
+      const tail = input.rest();
+      if (tail) processLine(tail, controller);
+      finish(controller);
     },
   });
 }
 
-/**
- * Transform a native Vertex streamGenerateContent SSE stream into an
- * OpenAI-compatible chat.completion.chunk SSE stream.
- */
+/** Decode native Vertex frames without serializing an intermediate SSE stream. */
 export function createVertexStreamTransformer(
-  requestModel: string
+  requestModel: string,
+  emit: ChatStreamSink = createChatSseSink()
 ): TransformStream<Uint8Array, Uint8Array> {
-  const encoder = new TextEncoder();
   const input = new SseLineBuffer();
+  const responseId = `chatcmpl-${crypto.randomUUID()}`;
+  const created = Math.floor(Date.now() / 1000);
   let doneSent = false;
   let sentRole = false;
-  // OpenAI clients accumulate tool call deltas by index, so it has to keep
-  // counting up across chunks instead of restarting at 0 for every frame.
   let toolCallIndex = 0;
   let sawToolCall = false;
-  // Clients wait for a finish_reason; an upstream error replaces it.
   let finished = false;
-  const responseId = `chatcmpl-${Date.now()}`;
+  type Controller = TransformStreamDefaultController<Uint8Array>;
 
-  function enqueueChunk(
-    controller: TransformStreamDefaultController<Uint8Array>,
-    delta: Record<string, unknown>,
-    finishReason: string | null,
-    usage?: OpenAIUsage
-  ) {
-    const chunk = {
-      id: responseId,
-      object: "chat.completion.chunk",
-      created: Math.floor(Date.now() / 1000),
-      model: requestModel,
+  function enqueueChunk(controller: Controller, delta: Record<string, unknown>, finishReason: string | null, usage?: OpenAIUsage) {
+    emit({
+      id: responseId, object: "chat.completion.chunk", created, model: requestModel,
       choices: [{ index: 0, delta, finish_reason: finishReason }],
       ...(usage ? { usage } : {}),
-    };
-    controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
+    }, controller);
   }
 
-  function processVertexChunk(
-    data: VertexResponse & { error?: unknown },
-    controller: TransformStreamDefaultController<Uint8Array>
-  ) {
-    // An error frame mid-stream: pass it on in the shape OpenAI SDKs raise
-    // from, rather than ending the stream as if the answer were complete.
+  function finish(controller: Controller) {
+    if (doneSent) return;
+    if (!finished) emit(streamError("Vertex AI stream ended before a finishReason was received."), controller);
+    emit("[DONE]", controller);
+    doneSent = true;
+  }
+
+  function processVertexChunk(data: VertexResponse & { error?: unknown }, controller: Controller) {
     if (data.error) {
-      controller.enqueue(
-        encoder.encode(`data: ${JSON.stringify({ error: data.error })}\n\n`)
-      );
+      emit({ error: data.error }, controller);
       finished = true;
+      finish(controller);
       return;
     }
-
-    // A blocked prompt arrives as a single frame with promptFeedback and no
-    // candidates.
     if (!data.candidates?.length && data.promptFeedback?.blockReason) {
       if (!sentRole) enqueueChunk(controller, { role: "assistant" }, null);
       sentRole = true;
-      enqueueChunk(
-        controller,
-        {},
-        "content_filter",
-        data.usageMetadata ? buildUsage(data.usageMetadata) : undefined
-      );
+      enqueueChunk(controller, {}, "content_filter", data.usageMetadata ? buildUsage(data.usageMetadata) : undefined);
       finished = true;
       return;
     }
-
     const candidate = data.candidates?.[0];
     const parts = candidate?.content?.parts || [];
-
     if (!sentRole && (parts.length > 0 || candidate?.finishReason)) {
       enqueueChunk(controller, { role: "assistant" }, null);
       sentRole = true;
     }
-
     for (const part of parts) {
       if (part.text) {
-        enqueueChunk(
-          controller,
-          part.thought
-            ? { reasoning_content: part.text }
-            : { content: part.text },
-          null
-        );
+        enqueueChunk(controller, part.thought ? { reasoning_content: part.text } : { content: part.text }, null);
       } else if (part.inlineData?.data) {
         const mimeType = part.inlineData.mimeType || "application/octet-stream";
-        enqueueChunk(
-          controller,
-          { content: `data:${mimeType};base64,${part.inlineData.data}` },
-          null
-        );
+        enqueueChunk(controller, { content: `data:${mimeType};base64,${part.inlineData.data}` }, null);
       }
     }
-
-    const toolCalls = convertFunctionCallsToOpenAI(
-      parts as VertexPart[],
-      responseId,
-      0,
-      toolCallIndex
-    );
+    const toolCalls = convertFunctionCallsToOpenAI(parts as VertexPart[], responseId, 0, toolCallIndex);
     for (const toolCall of toolCalls) {
       sawToolCall = true;
-      enqueueChunk(
-        controller,
-        {
-          tool_calls: [
-            {
-              index: toolCallIndex,
-              id: toolCall.id,
-              type: toolCall.type,
-              function: toolCall.function,
-              ...(toolCall.thought_signature
-                ? { thought_signature: toolCall.thought_signature }
-                : {}),
-            },
-          ],
-        },
-        null
-      );
+      enqueueChunk(controller, { tool_calls: [{ index: toolCallIndex, ...toolCall }] }, null);
       toolCallIndex++;
     }
-
     if (candidate?.finishReason) {
-      const usage = data.usageMetadata
-        ? buildUsage(data.usageMetadata)
-        : undefined;
-      enqueueChunk(
-        controller,
-        {},
-        mapFinishReason(candidate.finishReason, sawToolCall),
-        usage
-      );
+      enqueueChunk(controller, {}, mapFinishReason(candidate.finishReason, sawToolCall), data.usageMetadata ? buildUsage(data.usageMetadata) : undefined);
       finished = true;
+    } else if (data.usageMetadata && !candidate) {
+      emit({ id: responseId, object: "chat.completion.chunk", created, model: requestModel, choices: [], usage: buildUsage(data.usageMetadata) }, controller);
     }
   }
 
-  function processLine(
-    line: string,
-    controller: TransformStreamDefaultController<Uint8Array>
-  ) {
-    if (!line.startsWith("data: ")) return;
-    const payload = line.slice(6).trim();
+  function processLine(line: string, controller: Controller) {
+    if (doneSent || !line.startsWith("data:")) return;
+    const payload = line.slice(5).trim();
     if (!payload) return;
     if (payload === "[DONE]") {
-      controller.enqueue(encoder.encode("data: [DONE]\n\n"));
-      doneSent = true;
+      finish(controller);
       return;
     }
-
+    let data: VertexResponse;
     try {
-      processVertexChunk(JSON.parse(payload) as VertexResponse, controller);
+      data = JSON.parse(payload);
+      if (!data || typeof data !== "object" || Array.isArray(data)) throw new Error("Invalid frame");
     } catch {
-      // Skip malformed stream frames.
+      emit(streamError("Malformed JSON frame from Vertex AI."), controller);
+      finished = true;
+      finish(controller);
+      return;
     }
+    processVertexChunk(data, controller);
   }
 
   return new TransformStream({
     transform(chunk, controller) {
-      for (const line of input.push(chunk)) {
-        processLine(line.trimEnd(), controller);
-      }
+      for (const line of input.push(chunk)) processLine(line, controller);
     },
-
     flush(controller) {
-      const tail = input.rest().trim();
+      const tail = input.rest();
       if (tail) processLine(tail, controller);
-      // The connection can drop before the frame carrying finishReason.
-      if (!finished && !doneSent) {
-        enqueueChunk(controller, {}, sawToolCall ? "tool_calls" : "stop");
-      }
-      if (!doneSent) {
-        controller.enqueue(encoder.encode("data: [DONE]\n\n"));
-        doneSent = true;
-      }
+      finish(controller);
     },
   });
 }
 
-function makeChunk(
+function makeChunkFromBase(
+  base: ChatStreamChunk,
   model: string,
   delta: Record<string, unknown>,
   finishReason: string | null
-) {
+): ChatStreamChunk {
   return {
-    id: `chatcmpl-${Date.now()}`,
-    object: "chat.completion.chunk",
-    created: Math.floor(Date.now() / 1000),
-    model,
-    choices: [{ index: 0, delta, finish_reason: finishReason }],
-  };
-}
-
-function makeChunkFromBase(
-  base: Record<string, unknown>,
-  model: string,
-  delta: Record<string, unknown>,
-  finishReason: string | null | undefined
-) {
-  return {
-    id: base.id || `chatcmpl-${Date.now()}`,
+    id: base.id || `chatcmpl-${crypto.randomUUID()}`,
     object: "chat.completion.chunk",
     created: base.created || Math.floor(Date.now() / 1000),
     model,
-    // finish_reason is required on every streamed choice; undefined would be
-    // dropped by JSON.stringify and leave the key missing.
-    choices: [{ index: 0, delta, finish_reason: finishReason ?? null }],
+    choices: [{ index: 0, delta, finish_reason: finishReason }],
   };
 }

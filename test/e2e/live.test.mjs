@@ -12,8 +12,9 @@
 // Optional: E2E_MODEL (default gemini-3.8-flash),
 //           E2E_IMAGE_MODEL (default gemini-3.1-flash-lite-image).
 
-import { test, describe, before } from "node:test";
+import { test, describe, before, beforeEach } from "node:test";
 import assert from "node:assert/strict";
+import { setTimeout as sleep } from "node:timers/promises";
 
 const BASE = (process.env.E2E_BASE_URL ?? "http://localhost:8787").replace(/\/+$/, "");
 const KEY = process.env.E2E_API_KEY;
@@ -36,7 +37,14 @@ const TRANSIENT = new Set([429, 503, 504]);
 
 // ---------------------------------------------------------------- transport
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// Tests run serially. Cancel network reads and retry delays with their test so
+// a timeout cannot leave orphaned requests running during the next case.
+let testSignal;
+beforeEach((t) => { testSignal = t.signal; });
+const requestSignal = () => AbortSignal.any([
+  AbortSignal.timeout(330_000),
+  ...(testSignal ? [testSignal] : []),
+]);
 
 /** POST (or GET) with auth. Retries transient upstream states with backoff
  * so one busy minute does not fail the run; each retry is logged. */
@@ -50,11 +58,12 @@ async function api(path, body, { method = body ? "POST" : "GET", headers = {}, a
         ...headers,
       },
       body: body ? JSON.stringify(body) : undefined,
+      signal: requestSignal(),
     });
     if (!TRANSIENT.has(res.status) || attempt === 3) return res;
     console.log(`# ${res.status} from ${path}, retry ${attempt + 1}/3`);
     await res.body?.cancel();
-    await sleep(5000 * 2 ** attempt);
+    await sleep(5000 * 2 ** attempt, undefined, { signal: testSignal });
   }
 }
 
@@ -68,7 +77,9 @@ async function ok(path, body) {
 /** Read an SSE response into [{ event, data }] with data JSON-parsed. */
 async function events(path, body) {
   const res = await api(path, body);
-  assert.equal(res.status, 200, `${path} -> ${res.status}: ${(await res.clone().text()).slice(0, 400)}`);
+  if (res.status !== 200) {
+    assert.fail(`${path} -> ${res.status}: ${(await res.text()).slice(0, 400)}`);
+  }
   assert.match(res.headers.get("content-type") ?? "", /text\/event-stream/);
   const raw = await res.text();
   const out = [];
@@ -193,7 +204,6 @@ const DICE_PNG =
 
 const modelIds = [];
 const routes = [];
-let imageModel = null;
 
 before(async () => {
   const listing = await ok("/v1/models");
@@ -204,8 +214,10 @@ before(async () => {
   if (modelIds.includes(`[PAY] ${TEXT_MODEL}`)) {
     routes.push({ name: "service account (OpenAI-compatible endpoint)", model: `[PAY] ${TEXT_MODEL}`, native: false });
   }
-  imageModel = modelIds.find((id) => id.endsWith(` ${IMAGE_MODEL}`)) ?? null;
   assert.ok(routes.length > 0, `No credentials serve ${TEXT_MODEL}; listed: ${modelIds.slice(0, 5).join(", ")}`);
+  if (process.env.E2E_REQUIRE_BOTH_ROUTES === "1") {
+    assert.equal(routes.length, 2, "Both Express and service-account routes must be configured for this run");
+  }
   console.log(`# target ${BASE}`);
   console.log(`# routes: ${routes.map((r) => r.name).join(" | ")}`);
 });
@@ -213,6 +225,15 @@ before(async () => {
 // ------------------------------------------------------------------ plumbing
 
 describe("service plumbing", () => {
+  test("rejects invalid JSON shapes with 400", async () => {
+    for (const path of ["/v1/chat/completions", "/v1/responses"]) {
+      for (const body of [null, [], { model: TEXT_MODEL, input: [null], messages: [null] }]) {
+        const res = await fetch(BASE + path, { method: "POST", headers: { Authorization: `Bearer ${KEY}`, "Content-Type": "application/json" }, body: JSON.stringify(body), signal: requestSignal() });
+        assert.equal(res.status, 400);
+        assert.equal((await res.json()).error.type, "invalid_request_error");
+      }
+    }
+  });
   test("health check answers without auth", async () => {
     const res = await api("/", undefined, { auth: false });
     assert.equal(res.status, 200);
@@ -266,11 +287,8 @@ describe("service plumbing", () => {
   });
 });
 
-// ------------------------------------------------------- chat, every route
-
-describe("chat completions", () => {
-  // Routes are only known after before() ran, so each test loops over them.
-  const eachRoute = async (fn) => {
+// Routes are only known after before() ran, so each test loops over them.
+const eachRoute = async (fn) => {
     for (const route of routes) {
       try {
         await fn(route);
@@ -279,7 +297,11 @@ describe("chat completions", () => {
         throw e;
       }
     }
-  };
+};
+
+// ------------------------------------------------------- chat, every route
+
+describe("chat completions", () => {
 
   test("answers a plain prompt", SLOW, () =>
     eachRoute(async ({ model }) => {
@@ -362,14 +384,14 @@ describe("chat completions", () => {
       assert.ok(quick.choices[0].message.content.length > 0);
     }));
 
-  test("keeps a multi-turn conversation", SLOW, () =>
+  test("keeps a multi-turn conversation with developer instructions", SLOW, () =>
     eachRoute(async ({ model }) => {
       const res = await ok("/v1/chat/completions", {
         model,
         ...LOW,
         max_tokens: 300,
         messages: [
-          { role: "system", content: "You are terse." },
+          { role: "developer", content: "You are terse. Reply in one word." },
           { role: "user", content: "My name is Kazuki." },
           { role: "assistant", content: "Nice to meet you, Kazuki." },
           { role: "user", content: "What is my name? One word." },
@@ -554,8 +576,9 @@ describe("chat completions", () => {
 // ------------------------------------------------------ image generation
 
 describe("image generation", () => {
-  test("returns a data URL, streamed and not", { ...SLOW, skip: !WITH_IMAGES && "E2E_SKIP_IMAGES=1" }, async (t) => {
-    if (!imageModel) return t.skip(`${IMAGE_MODEL} is not listed`);
+  test("returns a data URL through Chat and Responses on every route", { ...SLOW, skip: !WITH_IMAGES && "E2E_SKIP_IMAGES=1" }, async () => eachRoute(async ({ model }) => {
+    const imageModel = model.replace(TEXT_MODEL, IMAGE_MODEL);
+    assert.ok(modelIds.includes(imageModel), `${imageModel} must be listed`);
     const body = {
       model: imageModel,
       messages: [{ role: "user", content: "Draw a plain red circle on a white background." }],
@@ -565,18 +588,26 @@ describe("image generation", () => {
 
     const s = assembleChat(await events("/v1/chat/completions", { ...body, stream: true }));
     assert.match(s.content, /data:image\/\w+;base64,/);
+    assert.deepEqual(s.errors, []);
+    assert.deepEqual(s.finishes, ["stop"]);
     assert.equal(s.done, 1);
-  });
+    const response = await events("/v1/responses", { model: imageModel, input: body.messages[0].content, stream: true });
+    const terminal = response.at(-1).data;
+    assert.equal(terminal.type, "response.completed");
+    assert.match(terminal.response.output_text, /data:image\/\w+;base64,/);
+    for (const { data } of response.filter(({ data }) => data.type === "response.output_item.done")) {
+      assert.deepEqual(terminal.response.output[data.output_index], data.item);
+    }
+  }));
 });
 
 // --------------------------------------------------------- Responses API
 
 describe("Responses API", () => {
-  const model = () => routes[0].model;
 
-  test("answers with a completed Response object", SLOW, async () => {
+  test("answers with a completed Response object", SLOW, async () => eachRoute(async ({ model }) => {
     const r = await ok("/v1/responses", {
-      model: model(),
+      model,
       reasoning: { effort: "low" },
       instructions: "Reply with just the number.",
       input: "What is 6 * 7?",
@@ -586,11 +617,11 @@ describe("Responses API", () => {
     assert.match(r.output_text, /42/);
     assert.ok(r.output.some((o) => o.type === "message"));
     assert.equal(r.usage.input_tokens + r.usage.output_tokens, r.usage.total_tokens);
-  });
+  }));
 
-  test("streams the documented event sequence", SLOW, async () => {
+  test("streams the documented event sequence", SLOW, async () => eachRoute(async ({ model }) => {
     const ev = await events("/v1/responses", {
-      model: model(),
+      model,
       stream: true,
       input: "Is 91 prime? One short sentence.",
     });
@@ -605,10 +636,10 @@ describe("Responses API", () => {
     assert.equal(ev.at(-1).data.response.output_text, done);
     assert.match(done, /not|no/i);
     assert.equal(done, done.trimStart());
-  });
+  }));
 
-  test("marks truncation incomplete with the spec's reason", SLOW, async () => {
-    const body = { model: model(), max_output_tokens: 24, input: "Explain in detail why the sky is blue." };
+  test("marks truncation incomplete with the spec's reason", SLOW, async () => eachRoute(async ({ model }) => {
+    const body = { model, max_output_tokens: 24, input: "Explain in detail why the sky is blue." };
     const r = await ok("/v1/responses", body);
     assert.equal(r.status, "incomplete");
     assert.deepEqual(r.incomplete_details, { reason: "max_output_tokens" });
@@ -618,9 +649,9 @@ describe("Responses API", () => {
     assert.equal(last.type, "response.incomplete");
     assert.deepEqual(last.response.incomplete_details, { reason: "max_output_tokens" });
     assert.ok(last.response.usage.output_tokens > 0, "usage must reach the final event");
-  });
+  }));
 
-  test("runs a function-call round trip, streamed and not", SLOW, async () => {
+  test("runs a function-call round trip, streamed and not", SLOW, async () => eachRoute(async ({ model }) => {
     const tool = {
       type: "function",
       name: "get_weather",
@@ -629,7 +660,7 @@ describe("Responses API", () => {
     const question = { role: "user", content: "What's the weather in Tokyo? Use the tool." };
 
     const first = await ok("/v1/responses", {
-      model: model(),
+      model,
       reasoning: { effort: "low" },
       tools: [tool],
       tool_choice: "required",
@@ -640,7 +671,7 @@ describe("Responses API", () => {
     assert.ok(calls[0].thought_signature, "non-streamed call keeps its signature");
 
     const ev = await events("/v1/responses", {
-      model: model(),
+      model,
       reasoning: { effort: "low" },
       stream: true,
       tools: [tool],
@@ -653,7 +684,7 @@ describe("Responses API", () => {
     assert.ok(streamed[0].thought_signature, "streamed call keeps its signature");
 
     const final = await ok("/v1/responses", {
-      model: model(),
+      model,
       reasoning: { effort: "low" },
       tools: [tool],
       input: [
@@ -668,25 +699,25 @@ describe("Responses API", () => {
     });
     assert.equal(final.status, "completed");
     assert.ok(final.output_text.length > 0);
-  });
+  }));
 
-  test("text.format follows a JSON schema", SLOW, async () => {
+  test("text.format follows a JSON schema", SLOW, async () => eachRoute(async ({ model }) => {
     const r = await ok("/v1/responses", {
-      model: model(),
+      model,
       reasoning: { effort: "low" },
       input: "Make up a dinner booking for 2 people in Tokyo.",
       text: { format: { type: "json_schema", name: "Booking", strict: true, schema: BOOKING_SCHEMA } },
     });
     assertBooking(JSON.parse(r.output_text));
-  });
+  }));
 
-  test("refuses previous_response_id instead of dropping history", async () => {
+  test("refuses previous_response_id instead of dropping history", async () => eachRoute(async ({ model }) => {
     const res = await api("/v1/responses", {
-      model: model(),
+      model,
       input: "and then?",
       previous_response_id: "resp_123",
     });
     assert.equal(res.status, 400);
     assert.equal((await res.json()).error.param, "previous_response_id");
-  });
+  }));
 });

@@ -105,6 +105,73 @@ beforeEach(() => {
   calls = [];
   realFetch = globalThis.fetch;
 });
+
+describe("request shape validation", () => {
+  test("invalid JSON shapes return 400 before calling Vertex", async () => {
+    stubFetch([OK_VERTEX]);
+    for (const path of ["/v1/chat/completions", "/v1/responses"]) {
+      const responses = path.endsWith("responses");
+      const field = responses ? "input" : "messages";
+      const valid = { model: "gemini-3.8-flash", [field]: [{ role: "user", content: "hi" }] };
+      const bodies = [null, [], 1, "hello", { ...valid, stream: "false" },
+        { ...valid, [field]: {} }, { ...valid, [field]: [null] },
+        { ...valid, [field]: [{ role: "invalid", content: "hi" }] },
+        { ...valid, [field]: [{ role: ["user"], content: "hi" }] },
+        ...[1, [null], [{ type: "text", text: 1 }], [{ type: "image_url", image_url: null }], [{ type: "audio" }]].map(content => ({ ...valid, [field]: [{ role: "user", content }] })),
+        { ...valid, tools: {} }, { ...valid, tools: [null] },
+        ...(responses ? [{ ...valid, instructions: [] }, { ...valid, input: [{ type: "function_call", arguments: {} }] }, { ...valid, input: [{ role: "assistant", content: [{ type: "refusal", refusal: 1 }] }] }] : [
+          { ...valid, messages: [{ role: "assistant", content: null, tool_calls: {} }] },
+          { ...valid, messages: [{ role: "assistant", content: null, tool_calls: [null] }] },
+          { ...valid, messages: [{ role: "assistant", content: null, tool_calls: [{ function: { name: "f", arguments: {} } }] }] },
+        ]),
+      ];
+      for (const body of bodies) {
+        const res = await call(path, { method: "POST", headers: authed(), body: JSON.stringify(body) });
+        assert.equal(res.status, 400, `${path}: ${JSON.stringify(body)}`);
+        assert.equal(res.headers.get("Access-Control-Allow-Origin"), "*");
+        assert.equal((await res.json() as { error: { type: string } }).error.type, "invalid_request_error");
+      }
+    }
+    assert.equal(calls.length, 0);
+  });
+
+  test("valid Responses history accepts text, image, reasoning, refusal and tool items", async () => {
+    stubFetch([OK_VERTEX]);
+    const res = await call("/v1/responses", { method: "POST", headers: authed(), body: JSON.stringify({
+      model: "gemini-3.8-flash", stream: false,
+      input: [
+        { type: "reasoning", id: "rs1" },
+        { role: "developer", content: "rules" },
+        { role: "user", content: [{ type: "input_text", text: "hi" }, { type: "input_image", image_url: "https://example.com/a.png" }] },
+        { role: "assistant", content: [{ type: "refusal", refusal: "No" }] },
+        { type: "function_call", call_id: "c1", name: "f", arguments: "{}" },
+        { type: "function_call_output", call_id: "c1", output: "ok" },
+        { role: "user", content: [{ type: "image_url", image_url: { url: "https://example.com/b.png" } }] },
+      ],
+    }) });
+    assert.equal(res.status, 200);
+    assert.deepEqual(calls[0].body.systemInstruction, { parts: [{ text: "rules" }] });
+  });
+});
+
+describe("Responses upstream failures", () => {
+  for (const native of [true, false]) {
+    test(`preserves upstream errors through the ${native ? "native" : "OpenAI"} pipeline`, async () => {
+      const partial = native ? { candidates: [{ content: { parts: [{ text: "partial" }] } }] } : { choices: [{ index: 0, delta: { content: "partial" } }] };
+      stubFetch([() => new Response([partial, { error: { code: 503, message: "Upstream unavailable" } }].map(data => `data: ${JSON.stringify(data)}\n\n`).join(""))]);
+      const res = await call("/v1/responses", {
+        method: "POST", headers: authed(), body: JSON.stringify({ model: "gemini-3.8-flash", input: "hi", stream: true }),
+      }, native ? ENV : { API_KEY: ENV.API_KEY, GOOGLE_CREDENTIALS_JSON: SA_JSON });
+      const raw = await res.text();
+      const events = raw.split("\n").filter(l => l.startsWith("data: ")).map(l => JSON.parse(l.slice(6)));
+      assert.equal(events.at(-1).type, "response.failed");
+      assert.equal(events.at(-1).response.error.message, "Upstream unavailable");
+      assert.equal(events.at(-1).response.output_text, "partial");
+      assert.equal(events.at(-1).response.output[0].status, "incomplete");
+      assert.ok(!raw.includes("response.completed"));
+    });
+  }
+});
 afterEach(() => {
   globalThis.fetch = realFetch;
 });

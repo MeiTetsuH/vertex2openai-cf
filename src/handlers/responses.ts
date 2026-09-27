@@ -4,6 +4,7 @@
 
 import type { Env, ResponsesRequest } from "../types";
 import { jsonError } from "../auth";
+import { validateRequestShape } from "../validation";
 import {
   dispatchToVertex,
   errorMessage,
@@ -17,7 +18,7 @@ import {
   createVertexStreamTransformer,
 } from "../converters/streaming";
 import { responsesRequestToChat, chatToResponse } from "../converters/responses";
-import { createResponsesStreamTransformer } from "../converters/responses-streaming";
+import { createResponsesStreamSink } from "../converters/responses-streaming";
 
 /**
  * Handle POST /v1/responses.
@@ -36,6 +37,9 @@ export async function handleResponses(
   } catch {
     return jsonError(400, "Invalid JSON in request body.", "invalid_request_error");
   }
+
+  const shapeError = validateRequestShape(body, true);
+  if (shapeError) return jsonError(400, shapeError.message, "invalid_request_error", shapeError.param);
 
   if (!body.model || typeof body.model !== "string") {
     return jsonError(400, "Missing required field: model.", "invalid_request_error");
@@ -70,13 +74,11 @@ export async function handleResponses(
   const { upstream, nativeVertex } = dispatched;
 
   if (stream) {
-    const toChatChunks = nativeVertex
-      ? createVertexStreamTransformer(body.model)
-      : createStreamTransformer(body.model);
-
-    const events = upstream
-      .body!.pipeThrough(toChatChunks)
-      .pipeThrough(createResponsesStreamTransformer(body, body.model));
+    const sink = createResponsesStreamSink(body, body.model);
+    const transformer = nativeVertex
+      ? createVertexStreamTransformer(body.model, sink)
+      : createStreamTransformer(body.model, sink);
+    const events = upstream.body!.pipeThrough(transformer);
 
     return new Response(events, { headers: SSE_HEADERS });
   }

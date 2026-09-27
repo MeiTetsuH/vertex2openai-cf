@@ -463,6 +463,78 @@ const chatChunk = (delta: unknown, finish: string | null = null, usage?: unknown
   })}\n\n`;
 
 describe("createResponsesStreamTransformer", () => {
+  test("keeps repeated text and reasoning segments distinct around tool calls", async () => {
+    const events = await pumpEvents([
+      chatChunk({ reasoning_content: "first thought" }),
+      chatChunk({ content: "before " }),
+      chatChunk({ tool_calls: [{ index: 0, id: "c1", function: { name: "f", arguments: "{}" } }] }),
+      chatChunk({ reasoning_content: "second thought" }),
+      chatChunk({ content: "after" }),
+      chatChunk({ reasoning_content: "last thought" }),
+      chatChunk({}, "tool_calls"),
+    ]);
+    const output = (events.at(-1)!.response as { output: Array<{ id: string; type: string; content?: Array<{ text: string }>; summary?: Array<{ text: string }> }>; output_text: string });
+    assert.equal(new Set(output.output.map(item => item.id)).size, output.output.length);
+    assert.deepEqual(output.output.filter(item => item.type === "message").map(item => item.content![0].text), ["before ", "after"]);
+    assert.deepEqual(output.output.filter(item => item.type === "reasoning").map(item => item.summary![0].text), ["first thought", "second thought", "last thought"]);
+    assert.equal(output.output_text, "before after");
+    for (const event of events.filter(event => event.type === "response.output_item.done")) {
+      assert.deepEqual(output.output[event.output_index as number], event.item);
+    }
+  });
+
+  test("responses created in the same millisecond have distinct ids", async (t) => {
+    t.mock.method(Date, "now", () => 1234567890);
+    const first = await pumpEvents([chatChunk({ content: "a" }, "stop")]);
+    const second = await pumpEvents([chatChunk({ content: "b" }, "stop")]);
+    const id = (events: Array<Record<string, unknown>>) => (events.at(-1)!.response as { id: string }).id;
+    assert.notEqual(id(first), id(second));
+  });
+
+  test("truncated reasoning and calls have matching item and response statuses", async () => {
+    for (const delta of [
+      { reasoning_content: "unfinished thought" },
+      { tool_calls: [{ index: 0, id: "c1", function: { name: "f", arguments: '{"city":' } }] },
+    ]) {
+      const events = await pumpEvents([chatChunk(delta), chatChunk({}, "length")]);
+      const item = events.find(e => e.type === "response.output_item.done")!.item;
+      const final = events.at(-1)!.response as { output: unknown[] };
+      assert.equal((item as { status: string }).status, "incomplete");
+      assert.deepEqual(final.output[0], item);
+      assert.equal(events.at(-1)!.type, "response.incomplete");
+    }
+  });
+
+  test("preserves final item identities and statuses after text then tools", async () => {
+    const events = await pumpEvents([
+      chatChunk({ reasoning_content: "think" }), chatChunk({ content: "checking" }),
+      chatChunk({ tool_calls: [{ index: 4, id: "c4", function: { name: "f", arguments: "{}" } }] }),
+      chatChunk({}, "tool_calls"),
+    ]);
+    const items = events.filter(e => e.type === "response.output_item.done").map(e => e.item);
+    assert.deepEqual((events.at(-1)!.response as { output: unknown[] }).output, items);
+  });
+
+  test("errors and missing finish reasons never report completion", async () => {
+    for (const tail of ["", "data: [DONE]\n\n", 'data: {"error":{"message":"quota exhausted"}}\n\n', 'data: {"error":"failure"}\n\n']) {
+      const events = await pumpEvents([chatChunk({ content: "partial" }), tail]);
+      assert.equal(events.at(-1)!.type, "response.failed");
+      assert.ok(!events.some(e => e.type === "response.completed"));
+      assert.equal((events.at(-1)!.response as { output_text: string }).output_text, "partial");
+    }
+  });
+
+  test("handles final unterminated frames, compact data fields, and duplicate done", async () => {
+    const events = await pumpEvents([": keepalive\n\ndata:\n\n", chatChunk({ content: "ok" }, "stop").trimEnd().replace("data: ", "data:")]);
+    assert.equal(events.at(-1)!.type, "response.completed");
+    const duplicated = await pumpEvents([chatChunk({}, "stop"), "data: [DONE]\n\ndata: [DONE]\n\n"]);
+    assert.equal(duplicated.filter(e => e.type === "response.completed").length, 1);
+    for (const invalid of ["null", "[]"]) {
+      const failed = await pumpEvents([`data: ${invalid}\n\n`]);
+      assert.equal(failed.at(-1)!.type, "response.failed");
+    }
+  });
+
   test("brackets a text response with the documented event sequence", async () => {
     const events = await pumpEvents([
       chatChunk({ role: "assistant" }),
@@ -648,23 +720,24 @@ describe("createResponsesStreamTransformer", () => {
     assert.equal(output[0].thought_signature, "NESTED");
   });
 
-  test("always finishes with response.completed even with no content", async () => {
+  test("an empty upstream stream fails instead of reporting success", async () => {
     const events = await pumpEvents([]);
     assert.deepEqual(events.map((e) => e.type), [
       "response.created",
       "response.in_progress",
-      "response.completed",
+      "response.failed",
     ]);
   });
 
-  test("ignores malformed frames", async () => {
+  test("fails on malformed frames", async () => {
     const events = await pumpEvents([
       "data: {not json}\n\n",
       chatChunk({ content: "ok" }),
       chatChunk({}, "stop"),
     ]);
     const completed = events.at(-1)!;
-    assert.equal((completed.response as { output_text: string }).output_text, "ok");
+    assert.equal(completed.type, "response.failed");
+    assert.equal((completed.response as { output_text: string }).output_text, "");
   });
 });
 
