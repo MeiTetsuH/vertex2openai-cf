@@ -4,6 +4,10 @@
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/workHMZ/vertex2openai-cf)
 
+**Project introduction** — 30s · 1080p
+
+https://github.com/user-attachments/assets/f39a1f83-e61e-45f7-a0a9-5f0f157b9295
+
 ## What changed since v1.0?
 
 These are cumulative v2.x changes; v1.0 already supported Chat Completions, streaming, tools, reasoning, search, images and both credential types.
