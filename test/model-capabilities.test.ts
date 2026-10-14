@@ -101,7 +101,7 @@ describe("getModelCapabilities", () => {
     assert.equal(getModelCapabilities("gemini-3.8-flash").isLite, false);
   });
 
-  test("only gemini-3.8-flash is flagged as rejecting MINIMAL", () => {
+  test("gemini-3.8-flash rejects MINIMAL without changing older models", () => {
     assert.equal(
       getModelCapabilities("gemini-3.8-flash").supportsMinimalThinkingLevel,
       false
@@ -112,10 +112,28 @@ describe("getModelCapabilities", () => {
     );
   });
 
-  test("only gemini-3.8-flash is flagged as rejecting penalties", () => {
+  test("gemini-3.8-flash rejects penalties without changing older models", () => {
     assert.equal(getModelCapabilities("gemini-3.8-flash").supportsPenalties, false);
     assert.equal(getModelCapabilities("gemini-3.5-flash").supportsPenalties, true);
     assert.equal(getModelCapabilities("gemini-3.1-pro-preview").supportsPenalties, true);
+  });
+
+  test("Argon applies its documented restrictions without changing future models", () => {
+    for (const model of ["gemini-4-argon", "gemini-4-argon-cyber-permissive"]) {
+      const caps = getModelCapabilities(model);
+      assert.equal(caps.isSupported, true);
+      assert.equal(caps.supportsThinking, true);
+      assert.equal(caps.supportsMinimalThinkingLevel, false);
+      assert.equal(caps.supportsPenalties, false);
+      assert.equal(caps.supportsSampling, false);
+      assert.equal(caps.supportsCandidateCount, false);
+      assert.equal(resolveThinkingLevel("none", caps), "LOW");
+      assert.equal(resolveThinkingLevel("minimal", caps), "LOW");
+      assert.equal(resolveThinkingLevel("medium", caps), "MEDIUM");
+      assert.equal(resolveThinkingLevel("max", caps), "HIGH");
+    }
+    assert.equal(getModelCapabilities("gemini-4-flash").supportsSampling, true);
+    assert.equal(getModelCapabilities("gemini-3.8-flash").supportsCandidateCount, true);
   });
 
   test("a future major version is supported without a code change", () => {

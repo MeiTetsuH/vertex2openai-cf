@@ -3,9 +3,9 @@
 // ============================================================
 
 /**
- * Capabilities are derived from the parsed version number, never from
- * hardcoded name prefixes. `gemini-3.8-flash`, `gemini-3-flash-preview` and a
- * future `gemini-4-flash` all land in the right branch with no code change.
+ * Parse the family version for baseline support, then apply documented
+ * model-specific restrictions. A newer version does not imply that every
+ * parameter supported by an older model is still accepted.
  */
 export interface ModelVersion {
   major: number;
@@ -22,10 +22,14 @@ export interface ModelCapabilities {
   isLite: boolean;
   isPro: boolean;
   supportsThinking: boolean;
-  /** Some Gemini 3 models reject thinkingLevel: MINIMAL with a 400. */
+  /** Some models reject thinkingLevel: MINIMAL with a 400. */
   supportsMinimalThinkingLevel: boolean;
-  /** Some Gemini 3 models reject frequencyPenalty / presencePenalty. */
+  /** Some models reject frequencyPenalty / presencePenalty. */
   supportsPenalties: boolean;
+  /** False when sampling controls are ignored by the model. */
+  supportsSampling: boolean;
+  /** False when even an explicit candidateCount of one is unsupported. */
+  supportsCandidateCount: boolean;
 }
 
 /** Gemini 2.x reached end of life in October 2026 and is not supported. */
@@ -37,6 +41,12 @@ export const MINIMUM_SUPPORTED_MAJOR = 3;
  * limitation, 2026-09-02). Requests for it fall back to LOW instead of failing.
  */
 const NO_MINIMAL_THINKING_LEVEL = new Set(["gemini-3.8-flash"]);
+
+/** Argon API restrictions documented by Google Cloud on 2026-10-13. */
+const ARGON_MODELS = new Set([
+  "gemini-4-argon",
+  "gemini-4-argon-cyber-permissive",
+]);
 
 /**
  * Models that reject `frequencyPenalty` / `presencePenalty` with
@@ -71,6 +81,7 @@ export function getModelCapabilities(baseModel: string): ModelCapabilities {
   const version = parseModelVersion(baseModel);
   const isSupported = atLeast(version, MINIMUM_SUPPORTED_MAJOR);
   const isImage = segment(baseModel, "image");
+  const isArgon = ARGON_MODELS.has(baseModel);
 
   return {
     version,
@@ -80,8 +91,10 @@ export function getModelCapabilities(baseModel: string): ModelCapabilities {
     isPro: segment(baseModel, "pro"),
     // Every Gemini 3 model thinks; image models reject thinkingConfig.
     supportsThinking: isSupported && !isImage,
-    supportsMinimalThinkingLevel: !NO_MINIMAL_THINKING_LEVEL.has(baseModel),
-    supportsPenalties: !NO_PENALTIES.has(baseModel),
+    supportsMinimalThinkingLevel: !isArgon && !NO_MINIMAL_THINKING_LEVEL.has(baseModel),
+    supportsPenalties: !isArgon && !NO_PENALTIES.has(baseModel),
+    supportsSampling: !isArgon,
+    supportsCandidateCount: !isArgon,
   };
 }
 

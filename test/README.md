@@ -36,6 +36,16 @@ The suite makes **real, billable Vertex calls**. It uses `/v1/models` to discove
 
 Chat and Responses tests exercise both available credential types. Image generation always uses native Vertex, including for service accounts. Scenarios cover authentication, invalid input, streaming, truncation, reasoning, multi-turn/tool signature round trips, tool choice, schemas, image input, search and image output. Retryable upstream failures are logged; exhausted retries fail the test. Test cancellation aborts active reads and backoff waits.
 
+## Argon checks with an existing gcloud login
+
+On a machine with Node 22.18+ and `gcloud` already authenticated:
+
+```bash
+npm run test:argon:gcloud
+```
+
+This uses the active gcloud project, or `GCP_PROJECT_ID` when provided, and keeps the access token in process memory. It makes real, billable short requests to the global project-scoped native and OpenAI-compatible APIs, using the current request/response/streaming converters. The 14 scenarios cover filtered parameters, minimum/maximum thinking, Chat and Responses streaming, structured output and signed tool round trips. Transient retries are bounded and logged. This does **not** validate Express-key authentication, service-account token exchange, Cloudflare execution, search/image generation, or long decode. Use the deployed E2E suite for production verification.
+
 ## CPU benchmark
 
 `npm run bench` uses synthetic upstream replies, without real Vertex calls. It reports local CPU and a historical ×7 projection; that projection is not production Cloudflare evidence. See [validation results and historical timings](../docs/testing.md) for measured values, test scope and known upstream failures.

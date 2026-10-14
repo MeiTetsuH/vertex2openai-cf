@@ -38,6 +38,15 @@ const parseChunks = (payloads: string[]) =>
   payloads.filter((p) => p !== "[DONE]").map((p) => JSON.parse(p));
 
 describe("createVertexStreamTransformer", () => {
+  test("reports an unsupported continuation as partial output, not a normal stop", async () => {
+    const payloads = await pump(createVertexStreamTransformer("gemini-4-argon"), [
+      'data: {"candidates":[{"content":{"parts":[{"text":"partial"}]},"finishReason":"CONTINUATION","continuationToken":"opaque"}]}\n\n',
+    ]);
+    const chunks = parseChunks(payloads);
+    assert.equal(chunks.map(c => c.choices[0].delta.content ?? "").join(""), "partial");
+    assert.equal(chunks.at(-1).choices[0].finish_reason, "length");
+    assert.equal(payloads.at(-1), "[DONE]");
+  });
   test("preserves a separate usage frame after the final candidate", async () => {
     const chunks = parseChunks(await pump(createVertexStreamTransformer("m"), [
       'data: {"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}]}\n\n',

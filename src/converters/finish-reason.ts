@@ -22,6 +22,9 @@ export type OpenAIFinishReason =
 const FINISH_REASON_MAP: Record<string, OpenAIFinishReason> = {
   STOP: "stop",
   MAX_TOKENS: "length",
+  // This adapter does not follow long-decode continuation tokens. Preserve
+  // the partial answer without presenting it as a completed generation.
+  CONTINUATION: "length",
   SAFETY: "content_filter",
   RECITATION: "content_filter",
   BLOCKLIST: "content_filter",

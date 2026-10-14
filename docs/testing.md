@@ -1,6 +1,24 @@
 # Validation and performance history
 
-This record preserves measurements from v1.x through v2.1.1. **Wall time, local CPU and Cloudflare CPU are different measurements.** Historical values are not a controlled cross-version benchmark. See the [README](../README.md#workers-free-plan-read-before-deploying) for current deployment guidance.
+This record preserves measurements from v1.x through v2.1.2. **Wall time, local CPU and Cloudflare CPU are different measurements.** Historical values are not a controlled cross-version benchmark. See the [README](../README.md#workers-free-plan-read-before-deploying) for current deployment guidance.
+
+## Gemini 4 Argon compatibility, v2.1.2 — 2026-10-14
+
+The local compatibility patch passed `npm run verify`: **292/292 unit tests**, with **99.84% line**, **93.59% branch** and **100% function** coverage. Regression coverage includes Argon model variants, thinking-level clamping, removal of unsupported parameters on both routes, local rejection of unsupported `n` values, and partial-output reporting for `CONTINUATION` in Chat and Responses.
+
+Real upstream checks ran on Linux with Node 24.18.0 and an existing gcloud login, using the patch's converters against `gemini-4-argon` in `global`:
+
+| API route | Scenarios | Result |
+| --- | ---: | --- |
+| Project-scoped native GenerateContent | 7 | All passed |
+| Project-scoped OpenAI compatibility | 7 | All passed |
+| **Total** | **14** | **14 passed, 0 failed; 16 HTTP requests, no retries** |
+
+Each route covered parameter filtering with minimum thinking, the `-nothinking` and `-max` variants, Chat streaming, JSON Schema output, a signed function-call round trip, and both streaming and non-streaming Responses conversion. An earlier minimal direct native probe also returned HTTP 200 and `ARGON_OK`.
+
+Run the reproducible checks with `npm run test:argon:gcloud`; see [test instructions](../test/README.md#argon-checks-with-an-existing-gcloud-login). These results validate real Vertex calls and the conversion code. They do **not** validate Express-key credentials, service-account token exchange, a deployed Cloudflare Worker, search/image generation, or long decode. No production deployment was performed for this validation.
+
+Argon keeps the upstream default thinking level (`medium`); `none`, `minimal` and `-nothinking` select `low`, and `-max` selects `high`. Both upstream routes omit ignored sampling controls, unsupported penalties and `n=1`; other `n` values return a local 400. Long decode is not implemented: outputs beyond the per-request limit require the native `v1beta1` continuation protocol. Native `CONTINUATION` results are reported as partial output (`length` / `response.incomplete`). See [Google's Argon guide](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/guides/gemini-4-argon).
 
 ## Production follow-up — 2026-09-27
 

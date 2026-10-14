@@ -125,11 +125,13 @@ export function buildGenerationConfig(
   const config: VertexGenerationConfig = {};
   const caps = getModelCapabilities(modelInfo.baseModel);
 
-  if (request.temperature != null) config.temperature = request.temperature;
+  if (caps.supportsSampling) {
+    if (request.temperature != null) config.temperature = request.temperature;
+    if (request.top_p != null) config.topP = request.top_p;
+    if (request.top_k != null) config.topK = request.top_k;
+  }
   const maxTokens = request.max_tokens ?? request.max_completion_tokens;
   if (maxTokens != null) config.maxOutputTokens = maxTokens;
-  if (request.top_p != null) config.topP = request.top_p;
-  if (request.top_k != null) config.topK = request.top_k;
   // OpenAI accepts a bare string here; Vertex only accepts an array.
   if (request.stop) {
     config.stopSequences = Array.isArray(request.stop)
@@ -137,7 +139,7 @@ export function buildGenerationConfig(
       : [request.stop];
   }
   if (request.seed != null) config.seed = request.seed;
-  if (request.n != null) config.candidateCount = request.n;
+  if (caps.supportsCandidateCount && request.n != null) config.candidateCount = request.n;
   // Dropped rather than forwarded on models that reject them outright.
   if (caps.supportsPenalties) {
     if (request.frequency_penalty != null) {
@@ -527,6 +529,7 @@ export function buildOpenAICompatibleBody(
   request: OpenAIRequest,
   modelInfo: ParsedModelInfo
 ): Record<string, unknown> {
+  const caps = getModelCapabilities(modelInfo.baseModel);
   const body: Record<string, unknown> = {
     model: `google/${modelInfo.baseModel}`,
     messages: signToolCallsForOpenAIEndpoint(request.messages),
@@ -534,16 +537,18 @@ export function buildOpenAICompatibleBody(
   };
 
   // Pass through standard OpenAI params
-  if (request.temperature != null) body.temperature = request.temperature;
+  if (caps.supportsSampling) {
+    if (request.temperature != null) body.temperature = request.temperature;
+    if (request.top_p != null) body.top_p = request.top_p;
+  }
   if (request.max_tokens != null) body.max_tokens = request.max_tokens;
   if (request.max_completion_tokens != null) {
     body.max_completion_tokens = request.max_completion_tokens;
   }
-  if (request.top_p != null) body.top_p = request.top_p;
   if (request.stop) body.stop = request.stop;
   if (request.seed != null) body.seed = request.seed;
-  if (request.n != null) body.n = request.n;
-  if (getModelCapabilities(modelInfo.baseModel).supportsPenalties) {
+  if (caps.supportsCandidateCount && request.n != null) body.n = request.n;
+  if (caps.supportsPenalties) {
     if (request.frequency_penalty != null) {
       body.frequency_penalty = request.frequency_penalty;
     }
@@ -576,8 +581,6 @@ export function buildOpenAICompatibleBody(
   };
 
   // Adjust thinking based on model flags
-  const caps = getModelCapabilities(modelInfo.baseModel);
-
   if (caps.supportsThinking) {
     google.thought_tag_marker = thinkingTag;
     const level = thinkingLevelFor(request, modelInfo, caps);

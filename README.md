@@ -1,6 +1,6 @@
 # Vertex2OpenAI on Cloudflare Workers
 
-**v2.1.1** — OpenAI-compatible Chat Completions and Responses for Vertex AI Gemini, with no runtime dependencies. Use your own adapter key in clients; the Worker manages Vertex credentials and token refresh.
+**v2.1.2** — OpenAI-compatible Chat Completions and Responses for Vertex AI Gemini, with no runtime dependencies. Use your own adapter key in clients; the Worker manages Vertex credentials and token refresh.
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/workHMZ/vertex2openai-cf)
 
@@ -12,16 +12,16 @@ https://github.com/user-attachments/assets/f39a1f83-e61e-45f7-a0a9-5f0f157b9295
 
 These are cumulative v2.x changes; v1.0 already supported Chat Completions, streaming, tools, reasoning, search, images and both credential types.
 
-| Area | v1.0 | v2.1.1 |
+| Area | v1.0 | v2.1.2 |
 | --- | --- | --- |
 | APIs | Chat Completions and model listing | Adds `/v1/responses`, including typed streaming events, tools and reasoning |
-| Models | Gemini 2.x and 3.x | **Gemini 3+ only**; configurable model list and capability-aware variants |
+| Models | Gemini 2.x and 3.x | **Latest Gemini models, including Gemini 4 Argon**; configurable model list and capability-aware variants |
 | Credentials | Express keys and service accounts | Rotation and failover across both credential pools; 429, 5xx and network failures can try the next credential |
 | Tool calls and schemas | Basic conversion | Gemini 3 thought-signature round trips; native JSON Schema support for `$ref`, `$defs` and nullable unions |
 | Images | Image variants | Always uses native Vertex, including with service accounts; removes unsupported image/search combinations |
 | Streaming | Basic SSE translation | Linear SSE parsing, correct usage and finish states; truncated, malformed and failed streams no longer look successful |
 | Request handling | Basic validation | `developer` instructions on both routes, invalid body shapes return 400, unique Responses/item IDs |
-| Verification | No automated suite in the v1.0 tag | 284 unit tests, coverage gates, CPU benchmarks and real Vertex E2E tests |
+| Verification | No automated suite in the v1.0 tag | 292 unit tests, coverage gates, CPU benchmarks and real Vertex E2E tests |
 
 **New in v2.1.1:** fixes Responses error/truncation handling and output snapshots, malformed request handling, `developer` messages and ID collisions. Responses streaming skips an intermediate SSE encode/parse step: **about 18% less CPU in the local pipeline benchmark**. [Full changes](https://github.com/workHMZ/vertex2openai-cf/compare/v2.1.0...v2.1.1).
 

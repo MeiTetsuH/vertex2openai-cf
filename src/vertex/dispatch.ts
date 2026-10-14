@@ -72,6 +72,19 @@ export async function dispatchToVertex(
     };
   }
 
+  // Omit n=1 upstream, but never silently reduce a multi-candidate request.
+  if (!caps.supportsCandidateCount && body.n != null && body.n !== 1) {
+    return {
+      ok: false,
+      error: jsonError(
+        400,
+        `Model '${modelInfo.baseModel}' only supports n=1.`,
+        "invalid_request_error",
+        "n"
+      ),
+    };
+  }
+
   const preference = credentialPreference(modelInfo);
   const sources = getCredentialSources(env, preference);
   if (sources.length === 0) {

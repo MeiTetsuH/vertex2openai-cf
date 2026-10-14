@@ -36,6 +36,8 @@ describe("mapFinishReason", () => {
   test("maps the documented reasons", () => {
     assert.equal(mapFinishReason("STOP"), "stop");
     assert.equal(mapFinishReason("MAX_TOKENS"), "length");
+    assert.equal(mapFinishReason("CONTINUATION"), "length");
+    assert.equal(mapFinishReason("CONTINUATION", true), "length");
     assert.equal(mapFinishReason("SAFETY"), "content_filter");
     assert.equal(mapFinishReason("BLOCKLIST"), "content_filter");
     assert.equal(mapFinishReason("IMAGE_SAFETY"), "content_filter");

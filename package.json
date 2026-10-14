@@ -1,6 +1,6 @@
 {
   "name": "vertex2openai-cf",
-  "version": "2.1.1",
+  "version": "2.1.2",
   "description": "OpenAI-compatible API adapter for Google Vertex AI Gemini 3 models, running on Cloudflare Workers. Serves both /v1/chat/completions and /v1/responses.",
   "keywords": [
     "cloudflare-workers",
@@ -33,6 +33,7 @@
     "typecheck": "tsc --noEmit",
     "test": "node scripts/test.js",
     "test:e2e": "node --test test/e2e/*.test.mjs",
+    "test:argon:gcloud": "node --import ./test/support/register.mjs scripts/test-argon-gcloud.mjs",
     "bench": "node --import ./test/support/register.mjs scripts/bench-cpu.mjs",
     "verify": "npm run typecheck && npm test"
   },
