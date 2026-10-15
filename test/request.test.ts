@@ -192,12 +192,35 @@ describe("buildGenerationConfig", () => {
     }
   });
 
-  test("other Gemini 3 models still get MINIMAL", () => {
+  test("Flash models that support MINIMAL retain it", () => {
     const cfg = buildGenerationConfig(
       req({ reasoning_effort: "none" }),
-      parseModelName("gemini-3.1-pro-preview")
+      parseModelName("gemini-3.5-flash-lite")
     );
     assert.equal(cfg.thinkingConfig?.thinkingLevel, "MINIMAL");
+  });
+
+  test("3.1 Pro clamps minimum effort and suffix overrides on both upstream routes", () => {
+    const cases: Array<[string, string | undefined, string | undefined]> = [
+      ["", "none", "LOW"],
+      ["", "minimal", "LOW"],
+      ["", "low", "LOW"],
+      ["", "medium", "MEDIUM"],
+      ["", "high", "HIGH"],
+      ["-nothinking", "high", "LOW"],
+      ["-max", "none", "HIGH"],
+      ["", undefined, undefined],
+    ];
+    for (const [suffix, effort, expected] of cases) {
+      const request = req({ model: `gemini-3.1-pro-preview${suffix}`, reasoning_effort: effort });
+      const info = parseModelName(request.model);
+      const native = buildVertexGenerateContentBody(request, info);
+      assert.equal(native.generationConfig?.thinkingConfig?.thinkingLevel, expected, `${suffix}/${effort}`);
+      const google = (buildOpenAICompatibleBody(request, info).extra_body as {
+        google: { thinking_config: { thinking_level?: string } };
+      }).google;
+      assert.equal(google.thinking_config.thinking_level, expected?.toLowerCase(), `${suffix}/${effort}`);
+    }
   });
 
   test("3.x flash-lite keeps thinkingLevel rather than the 2.5 lite behaviour", () => {
@@ -506,7 +529,7 @@ describe("buildOpenAICompatibleBody", () => {
   test("expresses reasoning_effort as thinking_level on Gemini 3", () => {
     const body = buildOpenAICompatibleBody(
       req({ reasoning_effort: "minimal" }),
-      parseModelName("gemini-3.1-pro-preview")
+      parseModelName("gemini-3.5-flash-lite")
     );
     const google = (body.extra_body as { google: Record<string, unknown> }).google;
     assert.deepEqual(google.thinking_config, {

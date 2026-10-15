@@ -159,8 +159,8 @@ describe("resolveThinkingLevel", () => {
   const pro31 = getModelCapabilities("gemini-3.1-pro-preview");
 
   test("maps every documented reasoning_effort value", () => {
-    assert.equal(resolveThinkingLevel("none", pro31), "MINIMAL");
-    assert.equal(resolveThinkingLevel("minimal", pro31), "MINIMAL");
+    assert.equal(resolveThinkingLevel("none", pro31), "LOW");
+    assert.equal(resolveThinkingLevel("minimal", pro31), "LOW");
     assert.equal(resolveThinkingLevel("low", pro31), "LOW");
     assert.equal(resolveThinkingLevel("medium", pro31), "MEDIUM");
     assert.equal(resolveThinkingLevel("high", pro31), "HIGH");

@@ -1,6 +1,45 @@
 # Validation and performance history
 
-This record preserves measurements from v1.x through v2.1.2. **Wall time, local CPU and Cloudflare CPU are different measurements.** Historical values are not a controlled cross-version benchmark. See the [README](../README.md#workers-free-plan-read-before-deploying) for current deployment guidance.
+This record preserves measurements from v1.x through v2.1.3. **Wall time, local CPU and Cloudflare CPU are different measurements.** Historical values are not a controlled cross-version benchmark. See the [README](../README.md#deploy) for current deployment guidance.
+
+## Thinking-level checks, v2.1.3 — 2026-10-15
+
+Live checks used the deployed Cloudflare Worker, service-account authentication and the global Vertex endpoint. Each explicit-level case also asserted the native and OpenAI-compatible request converters' outgoing thinking level. The focused model-capability, request and Responses tests passed **140/140**.
+
+| Check | Scope | Result |
+| --- | --- | --- |
+| Explicit effort values | Gemini 4 Argon and Gemini 3.8 Flash; seven values through Chat and Responses | **28/28 passed**; HTTP 200, `THINK_OK`, complete response |
+| Suffix overrides, streaming | Gemini 4 Argon; `-nothinking` with `high`, `-max` with `none`; both APIs | **4/4 passed**; suffix took precedence, complete stream |
+| Omitted effort | Chat, both models | **2/2 passed**; upstream default preserved |
+| Reasoning output | Gemini 4 Argon, Chat with `high`; count primes below 60 | Correct answer `17`; 432 reasoning tokens |
+
+For Argon and 3.8 Flash, `none` / `minimal` / `low` mapped to `LOW`, `medium` to `MEDIUM`, and `high` / `xhigh` / `max` to `HIGH`. The suffixes `-nothinking` and `-max` mapped to `LOW` and `HIGH`. `none` keeps thinking enabled at the lowest supported level. Both models default to `MEDIUM`, as documented in Google's [Argon guide](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/guides/gemini-4-argon) and [3.8 Flash guide](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/guides/gemini-3-8-flash).
+
+The checks also exposed a Gemini 3.1 Pro Preview adapter bug: `none` sent unsupported `MINIMAL` and returned HTTP 400. The fix maps `none`, `minimal` and `-nothinking` to `LOW`, preserving explicit `MEDIUM` / `HIGH` and the upstream default. See the [README examples and mapping](../README.md#thinking).
+
+Post-fix checks used the current converters with an existing gcloud login against real Vertex native GenerateContent and OpenAI-compatible endpoints: **8/8 passed** with HTTP 200, `PRO_THINK_OK` and complete responses. Each endpoint covered Chat `none`, `minimal`, `-nothinking` with conflicting `high`, and Responses conversion with `none`. These exercised the patched converters directly. The earlier Cloudflare checks above used the deployed version.
+
+The new regression tests reproduced the incorrect `MINIMAL` before the fix and passed afterward: **142/142 focused tests**. The final `npm run verify` passed TypeScript checks and **294/294 unit tests**, with **99.84% line**, **93.60% branch** and **100% function** coverage.
+
+## Production checks, v2.1.2 — 2026-10-15
+
+`npm run verify` passed **292/292 unit tests** and TypeScript checks. Coverage: **99.84% lines**, **93.59% branches**, **100% functions**.
+
+Live requests ran through the deployed Cloudflare Worker with service-account authentication and the global Vertex endpoint:
+
+| Model | Request | Result | Wall time |
+| --- | --- | --- | ---: |
+| Gemini 3.8 Flash | Chat | HTTP 200 · `CREDIT_OK` | 2.143 s |
+| Gemini 3.8 Flash | Responses | HTTP 200 · completed · `CREDIT_OK` | 2.028 s |
+| Gemini 3.8 Flash | Chat streaming | HTTP 200 · `CREDIT_OK` · `[DONE]` | 40.158 s |
+| Gemini 4 Argon | Chat | HTTP 200 · `ARGON_CF_OK` · stop | 4.36 s |
+| Gemini 4 Argon | Responses | HTTP 200 · completed · `ARGON_CF_OK` | 2.82 s |
+| Gemini 4 Argon | Chat streaming | HTTP 200 · `ARGON_CF_OK` · `[DONE]` | 2.31 s |
+| Gemini 4 Argon | Responses streaming | HTTP 200 · `ARGON_CF_OK` · completed event | 3.40 s |
+
+The Gemini 4 requests used `[PAY] gemini-4-argon`. Each returned usage of **41 input tokens and 10 output tokens**. The Chat requests also exercised filtering of `n=1`, sampling controls and penalty parameters. Both streaming checks verified the complete response text and terminal event.
+
+`GET /v1/models` returned HTTP 200 and **63 model variants**, including the Argon variants. The two model-list probes took 0.124 s and 0.18 s.
 
 ## Gemini 4 Argon compatibility, v2.1.2 — 2026-10-14
 

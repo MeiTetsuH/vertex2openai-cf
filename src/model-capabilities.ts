@@ -37,10 +37,13 @@ export const MINIMUM_SUPPORTED_MAJOR = 3;
 
 /**
  * Models documented as rejecting `thinkingLevel: "MINIMAL"`.
- * gemini-3.8-flash: "The minimal thinking level is not supported" (launch
- * limitation, 2026-09-02). Requests for it fall back to LOW instead of failing.
+ * Gemini 3.1 Pro Preview and 3.8 Flash accept LOW as their minimum level.
+ * Requests for MINIMAL fall back to LOW instead of failing upstream.
  */
-const NO_MINIMAL_THINKING_LEVEL = new Set(["gemini-3.8-flash"]);
+const NO_MINIMAL_THINKING_LEVEL = new Set([
+  "gemini-3.1-pro-preview",
+  "gemini-3.8-flash",
+]);
 
 /** Argon API restrictions documented by Google Cloud on 2026-10-13. */
 const ARGON_MODELS = new Set([

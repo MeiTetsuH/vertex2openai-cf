@@ -10,6 +10,7 @@ import {
   buildOutputItems,
 } from "../src/converters/responses";
 import { createResponsesStreamTransformer } from "../src/converters/responses-streaming";
+import { parseModelName, buildGenerationConfig } from "../src/converters/request";
 import type { OpenAIResponse, ResponsesRequest } from "../src/types";
 
 const base: ResponsesRequest = { model: "gemini-3.8-flash" };
@@ -141,6 +142,16 @@ describe("responsesRequestToChat", () => {
     });
     assert.equal(chat.max_tokens, 256);
     assert.equal(chat.reasoning_effort, "high");
+  });
+
+  test("3.1 Pro Responses minimum effort reaches Vertex as LOW", () => {
+    for (const effort of ["none", "minimal"]) {
+      const chat = responsesRequestToChat({
+        model: "gemini-3.1-pro-preview", input: "hi", reasoning: { effort },
+      });
+      const config = buildGenerationConfig(chat, parseModelName(chat.model));
+      assert.equal(config.thinkingConfig?.thinkingLevel, "LOW", effort);
+    }
   });
 
   test("never produces an empty messages array", () => {
