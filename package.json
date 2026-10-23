@@ -45,5 +45,10 @@
   "allowScripts": {
     "workerd@1.20261019.1": true,
     "esbuild@0.28.2": true
+  },
+  "overrides": {
+    "miniflare": {
+      "undici": "^7.30.1"
+    }
   }
 }
