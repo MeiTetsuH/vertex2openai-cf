@@ -16,7 +16,7 @@ https://github.com/user-attachments/assets/f39a1f83-e61e-45f7-a0a9-5f0f157b9295
 
 ## Deploy
 
-Requires Node.js 20+ and npm. For service accounts, enable Vertex AI and billing on your GCP project.
+Requires a patched Node.js release (22.23.4+, 24.22.1+, or 26.12.1+) and npm. Node.js 24.22.1 is pinned in .nvmrc. For service accounts, enable Vertex AI and billing on your GCP project.
 
 ```bash
 git clone https://github.com/workHMZ/vertex2openai-cf.git
