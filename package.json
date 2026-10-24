@@ -47,8 +47,6 @@
     "esbuild@0.28.2": true
   },
   "overrides": {
-    "miniflare": {
-      "undici": "^7.30.1"
-    }
+    "undici": "^7.30.1"
   }
 }
